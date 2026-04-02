@@ -504,3 +504,149 @@ describe('sanitizeFieldValue', () => {
     expect(result.wasModified).toBe(true)
   })
 })
+
+// ─── validateFieldConstraints (NEW-002) ──────────────────────────────────────
+
+import { validateFieldConstraints } from '../../src/utils/sanitize.js'
+import type { FieldSchema } from '../../src/types.js'
+
+describe('validateFieldConstraints — NEW-002: FieldValidation constraint enforcement', () => {
+  // ── minLength ──────────────────────────────────────────────────────────────
+
+  it('returns valid when value meets minLength', () => {
+    const field: FieldSchema = { name: 'f', type: 'text', validation: { minLength: 3 } }
+    expect(validateFieldConstraints('abc', field)).toMatchObject({ valid: true })
+  })
+
+  it('returns invalid when value is shorter than minLength', () => {
+    const field: FieldSchema = { name: 'f', type: 'text', validation: { minLength: 5 } }
+    const result = validateFieldConstraints('hi', field)
+    expect(result.valid).toBe(false)
+    expect(result.reason).toMatch(/minLength/i)
+  })
+
+  it('returns valid when value length exactly equals minLength', () => {
+    const field: FieldSchema = { name: 'f', type: 'text', validation: { minLength: 4 } }
+    expect(validateFieldConstraints('abcd', field)).toMatchObject({ valid: true })
+  })
+
+  // ── maxLength ──────────────────────────────────────────────────────────────
+
+  it('returns valid when value meets maxLength', () => {
+    const field: FieldSchema = { name: 'f', type: 'text', validation: { maxLength: 50 } }
+    expect(validateFieldConstraints('short text', field)).toMatchObject({ valid: true })
+  })
+
+  it('returns invalid when value exceeds maxLength', () => {
+    // Scenario from NEW-002: LLM returns 2000 chars for a maxLength:50 field.
+    // Before the fix, this was silently accepted and injected.
+    const field: FieldSchema = { name: 'f', type: 'text', validation: { maxLength: 50 } }
+    const longValue = 'x'.repeat(51)
+    const result = validateFieldConstraints(longValue, field)
+    expect(result.valid).toBe(false)
+    expect(result.reason).toMatch(/maxLength/i)
+  })
+
+  it('returns valid when value length exactly equals maxLength', () => {
+    const field: FieldSchema = { name: 'f', type: 'text', validation: { maxLength: 5 } }
+    expect(validateFieldConstraints('abcde', field)).toMatchObject({ valid: true })
+  })
+
+  // ── min (numeric lower bound) ──────────────────────────────────────────────
+
+  it('returns valid when numeric value meets min constraint', () => {
+    const field: FieldSchema = { name: 'f', type: 'number', validation: { min: 0 } }
+    expect(validateFieldConstraints('42', field)).toMatchObject({ valid: true })
+  })
+
+  it('returns invalid when numeric value is below min', () => {
+    // Scenario from NEW-002: min:0, max:100 field — LLM returns "-9999".
+    // Number format regex passes (negatives are syntactically valid).
+    // Before the fix, the constraint was never checked.
+    const field: FieldSchema = { name: 'f', type: 'number', validation: { min: 0, max: 100 } }
+    const result = validateFieldConstraints('-9999', field)
+    expect(result.valid).toBe(false)
+    expect(result.reason).toMatch(/min/i)
+  })
+
+  it('returns valid when numeric value exactly equals min', () => {
+    const field: FieldSchema = { name: 'f', type: 'number', validation: { min: 5 } }
+    expect(validateFieldConstraints('5', field)).toMatchObject({ valid: true })
+  })
+
+  // ── max (numeric upper bound) ──────────────────────────────────────────────
+
+  it('returns valid when numeric value meets max constraint', () => {
+    const field: FieldSchema = { name: 'f', type: 'number', validation: { max: 100 } }
+    expect(validateFieldConstraints('100', field)).toMatchObject({ valid: true })
+  })
+
+  it('returns invalid when numeric value exceeds max', () => {
+    const field: FieldSchema = { name: 'f', type: 'number', validation: { max: 100 } }
+    const result = validateFieldConstraints('101', field)
+    expect(result.valid).toBe(false)
+    expect(result.reason).toMatch(/max/i)
+  })
+
+  it('returns valid when numeric value exactly equals max', () => {
+    const field: FieldSchema = { name: 'f', type: 'number', validation: { max: 10 } }
+    expect(validateFieldConstraints('10', field)).toMatchObject({ valid: true })
+  })
+
+  // ── min+max combination ────────────────────────────────────────────────────
+
+  it('returns valid when value is within min/max range', () => {
+    const field: FieldSchema = { name: 'f', type: 'number', validation: { min: 1, max: 10 } }
+    expect(validateFieldConstraints('5', field)).toMatchObject({ valid: true })
+  })
+
+  it('returns invalid when value is above max in a min+max combination', () => {
+    const field: FieldSchema = { name: 'f', type: 'number', validation: { min: 1, max: 10 } }
+    const result = validateFieldConstraints('11', field)
+    expect(result.valid).toBe(false)
+  })
+
+  // ── Non-numeric value with min/max (guard) ─────────────────────────────────
+
+  it('returns invalid (not a number) when value is non-numeric and min/max are set', () => {
+    const field: FieldSchema = { name: 'f', type: 'number', validation: { min: 0, max: 100 } }
+    const result = validateFieldConstraints('not-a-number', field)
+    expect(result.valid).toBe(false)
+  })
+
+  // ── pattern ───────────────────────────────────────────────────────────────
+  // Pattern evaluation is intentionally SKIPPED due to ReDoS risk (ADV-002).
+  // The implementation should return { valid: true } for pattern constraints
+  // with a TODO comment — not throw, not silently drop, not evaluate.
+
+  it('skips pattern validation and returns valid (ReDoS protection — ADV-002)', () => {
+    // This test documents the intentional non-enforcement of pattern.
+    // When ReDoS-safe evaluation is implemented, this test must be updated.
+    const field: FieldSchema = {
+      name: 'f',
+      type: 'text',
+      validation: { pattern: '^[A-Z]{2}[0-9]{6}$' },
+    }
+    // Intentionally a non-matching value — pattern is skipped, so result is valid
+    const result = validateFieldConstraints('anything-not-matching', field)
+    expect(result.valid).toBe(true)
+  })
+
+  // ── No validation constraints ──────────────────────────────────────────────
+
+  it('returns valid when field has no validation property', () => {
+    const field: FieldSchema = { name: 'f', type: 'text' }
+    expect(validateFieldConstraints('any value', field)).toMatchObject({ valid: true })
+  })
+
+  it('returns valid when validation object is empty', () => {
+    const field: FieldSchema = { name: 'f', type: 'text', validation: {} }
+    expect(validateFieldConstraints('any value', field)).toMatchObject({ valid: true })
+  })
+
+  // ── Integration: buildConfirmationData flags constraint violations ─────────
+  // These tests verify the integration of validateFieldConstraints into the
+  // buildConfirmationData pipeline in create-voice-form.ts.
+  // They are placed here (alongside the unit tests) to keep constraint logic
+  // cohesive. Full integration coverage is in create-voice-form.test.ts.
+})

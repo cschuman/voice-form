@@ -266,8 +266,13 @@ function runDomMode(
         // Build the work plan for this field based on element type.
         if (el instanceof HTMLSelectElement) {
           // Validate the value against the select's own option list.
-          const optionValues = Array.from(el.options).map((o) => o.value)
-          if (optionValues.length > 0 && !optionValues.includes(sanitizedValue)) {
+          // Iterate directly — avoids allocating two intermediate arrays per call.
+          let matchIndex = -1
+          const optionCount = el.options.length
+          for (let i = 0; i < optionCount; i++) {
+            if (el.options[i]!.value === sanitizedValue) { matchIndex = i; break }
+          }
+          if (optionCount > 0 && matchIndex === -1) {
             work.push({
               name: fieldName,
               plan: { kind: 'skip', reason: { status: 'skipped', reason: 'value-not-in-options' } },

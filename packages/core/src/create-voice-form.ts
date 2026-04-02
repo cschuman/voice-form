@@ -26,7 +26,7 @@ import { createStateMachine } from './state-machine.js'
 import { createWebSpeechAdapter } from './adapters/web-speech.js'
 import { EndpointClient, resolveEndpointOptions } from './endpoint-client.js'
 import { createInjector } from './injector.js'
-import { sanitizeFieldValue } from './utils/sanitize.js'
+import { sanitizeFieldValue, validateFieldConstraints } from './utils/sanitize.js'
 import { validateTranscript } from './utils/validate-transcript.js'
 import type {
   VoiceFormConfig,
@@ -132,6 +132,55 @@ function safeInvokeCallback<T, R>(
   }
 }
 
+/**
+ * Invokes the onBeforeConfirm callback with exception detection.
+ *
+ * Unlike `safeInvokeCallback`, this function distinguishes between a callback
+ * that threw and one that succeeded. When the callback throws, the error is
+ * reported to the `onError` callback (NEW-004 / CWE-754) so that developer
+ * error-handling infrastructure (Sentry, Datadog, etc.) is engaged. The
+ * original sanitized data is used as a fallback so the state machine flow
+ * continues — data integrity is maintained even when the hook fails.
+ *
+ * The `onBeforeConfirm` callback is a data-augmentation hook. Its failure is
+ * behaviorally silent from the user's perspective (original data is used),
+ * which makes it particularly important to surface the exception explicitly to
+ * the developer.
+ *
+ * @param callback   - The onBeforeConfirm callback, or undefined.
+ * @param arg        - The ConfirmationData to pass to the callback.
+ * @param onError    - The developer's onError callback, if configured.
+ * @returns The callback's return value, the original arg as fallback on throw,
+ *          or the original arg when no callback is configured.
+ */
+function invokeBeforeConfirm(
+  callback: ((data: ConfirmationData) => ConfirmationData | void) | undefined,
+  arg: ConfirmationData,
+  onError: ((err: VoiceFormError) => void) | undefined,
+): ConfirmationData {
+  if (!callback) return arg
+
+  try {
+    const result = callback(arg)
+    // If the callback returned undefined, fall back to the original data
+    return result !== undefined ? result : arg
+  } catch (err) {
+    console.error('[voice-form] Error in onBeforeConfirm callback:', err)
+    // NEW-004: Report the failure to the developer's onError callback so that
+    // error tracking infrastructure is engaged. The original sanitized data is
+    // used as a fallback so the flow continues. (CWE-754)
+    if (onError) {
+      safeInvokeCallback(onError, new VoiceFormErrorImpl(
+        'BEFORE_CONFIRM_FAILED',
+        'onBeforeConfirm callback threw an exception — using original confirmation data as fallback. ' +
+        `Original error: ${err instanceof Error ? err.message : String(err)}`,
+        true,
+      ))
+    }
+    return arg
+  }
+}
+
 // ─── isAbortError ─────────────────────────────────────────────────────────────
 
 /**
@@ -213,6 +262,7 @@ function buildConfirmationData(
     const label = fieldDef.label ?? fieldDef.name
     let sanitizedValue = raw.value
 
+    let constraintViolation = false
     try {
       const result = sanitizeFieldValue(
         raw.value,
@@ -220,15 +270,34 @@ function buildConfirmationData(
         fieldDef.options as string[] | undefined,
       )
       sanitizedValue = typeof result.value === 'string' ? result.value : String(result.value)
+
+      // NEW-002: Evaluate FieldValidation constraints on the sanitized value.
+      // Constraints are advertised to the LLM in the prompt but were previously
+      // never verified client-side. Violations are flagged in invalidFields but
+      // do not block injection — consistent with the contract in types.ts. (CWE-20)
+      const constraintResult = validateFieldConstraints(sanitizedValue, fieldDef)
+      if (!constraintResult.valid) {
+        constraintViolation = true
+        invalidFields.push({
+          name: fieldDef.name,
+          value: sanitizedValue,
+          reason: constraintResult.reason ?? 'Constraint validation failed',
+        })
+      }
     } catch (err) {
       // Sanitization failure — record as invalid but include the stripped value
       sanitizedValue = raw.value
+      constraintViolation = true
       invalidFields.push({
         name: fieldDef.name,
         value: raw.value,
         reason: err instanceof Error ? err.message : 'Sanitization failed',
       })
     }
+
+    // Include in parsedFields regardless of constraint violation — the user
+    // can still confirm with the warning visible in the confirmation panel.
+    void constraintViolation // used above; referenced here to satisfy linter
 
     parsedFields[fieldDef.name] = {
       label,
@@ -258,8 +327,12 @@ function sanitizeConfirmationData(
 ): ConfirmationData {
   const sanitizedParsedFields: Record<string, ConfirmedField> = {}
 
+  // Build a name→schema Map once so each per-field lookup is O(1) instead of
+  // performing a linear scan (schema.fields.find) on every iteration. (N-5)
+  const fieldsByName = new Map(schema.fields.map((f) => [f.name, f]))
+
   for (const [fieldName, confirmedField] of Object.entries(data.parsedFields)) {
-    const fieldDef = schema.fields.find((f) => f.name === fieldName)
+    const fieldDef = fieldsByName.get(fieldName)
     const fieldType = fieldDef?.type ?? 'text'
     const options = fieldDef?.options as string[] | undefined
 
@@ -324,15 +397,33 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
   const sttAdapter = config.sttAdapter ?? createWebSpeechAdapter()
 
   // ── 4. Create endpoint client ────────────────────────────────────────────
-  const resolvedOptions = resolveEndpointOptions(config.endpointOptions)
+  // Pass config.debug so the endpoint client gates rawBody on the debug flag.
+  // When debug is false (default), rawBody is omitted from debugInfo on HTTP
+  // errors, preventing PII in LLM provider error responses from reaching
+  // onError callbacks. (NEW-001 / CWE-209)
+  const resolvedOptions = resolveEndpointOptions(config.endpointOptions, config.debug ?? false)
   const endpointClient = new EndpointClient(config.endpoint, resolvedOptions)
 
   // ── 5. Create injector ───────────────────────────────────────────────────
   // Resolve the formElement if provided as a CSS selector string.
   let formElementResolved: HTMLElement | undefined
   if (typeof config.formElement === 'string') {
-    const found = document.querySelector<HTMLElement>(config.formElement)
-    formElementResolved = found ?? undefined
+    let found: HTMLElement | null
+    try {
+      found = document.querySelector<HTMLElement>(config.formElement)
+    } catch {
+      throw new VoiceFormConfigError(
+        'INIT_FAILED',
+        `VoiceFormConfig.formElement: invalid CSS selector "${config.formElement}". Provide a valid selector or an HTMLElement reference.`,
+      )
+    }
+    if (found === null) {
+      throw new VoiceFormConfigError(
+        'INIT_FAILED',
+        `VoiceFormConfig.formElement: selector "${config.formElement}" matched no element. Ensure the element exists before calling createVoiceForm().`,
+      )
+    }
+    formElementResolved = found
   } else {
     formElementResolved = config.formElement
   }
@@ -349,6 +440,23 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
   let autoResetTimer: ReturnType<typeof setTimeout> | null = null
   let lastRequestTimestamp = 0
   const cooldownMs = config.requestCooldownMs ?? 3000
+
+  // Cooldown enforcement — timer-based flag that is armed when the done state
+  // is entered (after a completed endpoint request). start() checks this flag
+  // and rejects while active, firing onError(COOLDOWN_ACTIVE) directly without
+  // touching the state machine (avoids reentrancy guard interactions). (HIGH-004)
+  let cooldownActive = false
+  let cooldownTimerId: ReturnType<typeof setTimeout> | null = null
+
+  function startCooldownTimer(): void {
+    if (cooldownMs <= 0) return
+    if (cooldownTimerId !== null) clearTimeout(cooldownTimerId)
+    cooldownActive = true
+    cooldownTimerId = setTimeout(() => {
+      cooldownTimerId = null
+      cooldownActive = false
+    }, cooldownMs)
+  }
 
   // Active STT events binding — stored so abort can suppress stale callbacks
   let sttEventsActive = false
@@ -375,6 +483,8 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
       autoResetTimer = null
       if (!destroyed) machine.dispatch({ type: 'AUTO_RESET' })
     }, 500)
+    // Arm the cooldown timer. start() will reject new sessions until it fires.
+    startCooldownTimer()
   }
 
   function handleError(state: Extract<VoiceFormState, { status: 'error' }>): void {
@@ -444,9 +554,14 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
 
           const confirmation = buildConfirmationData(response, validation.transcript, currentSchema)
 
-          // Fire onBeforeConfirm with safe exception handling.
-          const maybeModified =
-            safeInvokeCallback(config.events?.onBeforeConfirm, confirmation) ?? confirmation
+          // Fire onBeforeConfirm with exception detection (NEW-004).
+          // Unlike safeInvokeCallback, invokeBeforeConfirm routes exceptions to
+          // onError so the developer's error-handling infrastructure is engaged.
+          const maybeModified = invokeBeforeConfirm(
+            config.events?.onBeforeConfirm,
+            confirmation,
+            config.events?.onError,
+          )
 
           // Re-sanitize after developer modification (MED-004).
           const sanitized = sanitizeConfirmationData(maybeModified, currentSchema)
@@ -521,30 +636,31 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
     })
   })
 
-  // ── Build STT events object ───────────────────────────────────────────────
+  // ── STT events object — built once, shared across all start() calls ──────
+  //
+  // The closures capture `sttEventsActive` and `machine` by reference from the
+  // enclosing scope. Both are mutable bindings, so every invocation reads the
+  // current value — no need to rebuild the object on each start().
+  const sttEvents: STTAdapterEvents = {
+    onInterim(transcript: string) {
+      if (!sttEventsActive) return
+      machine.dispatch({ type: 'STT_INTERIM', transcript })
+      safeInvokeCallback(config.events?.onInterimTranscript, transcript)
+    },
 
-  function buildSTTEvents(): STTAdapterEvents {
-    return {
-      onInterim(transcript: string) {
-        if (!sttEventsActive) return
-        machine.dispatch({ type: 'STT_INTERIM', transcript })
-        safeInvokeCallback(config.events?.onInterimTranscript, transcript)
-      },
+    onFinal(transcript: string) {
+      if (!sttEventsActive) return
+      machine.dispatch({ type: 'STT_FINAL', transcript })
+    },
 
-      onFinal(transcript: string) {
-        if (!sttEventsActive) return
-        machine.dispatch({ type: 'STT_FINAL', transcript })
-      },
+    onError(error: Parameters<STTAdapterEvents['onError']>[0]) {
+      if (!sttEventsActive) return
+      machine.dispatch({ type: 'STT_ERROR', error })
+    },
 
-      onError(error: Parameters<STTAdapterEvents['onError']>[0]) {
-        if (!sttEventsActive) return
-        machine.dispatch({ type: 'STT_ERROR', error })
-      },
-
-      onEnd() {
-        sttEventsActive = false
-      },
-    }
+    onEnd() {
+      sttEventsActive = false
+    },
   }
 
   // ── Return VoiceFormInstance ──────────────────────────────────────────────
@@ -580,26 +696,19 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
       if (currentState.status !== 'idle') return
 
       // Cooldown guard (HIGH-004)
-      // Per spec: if within the cooldown window, drop the START event and
-      // surface a COOLDOWN_ACTIVE error instead. We do this by going through
-      // recording→processing→error so the error state and onError callback fire.
-      if (cooldownMs > 0 && lastRequestTimestamp > 0) {
-        const elapsed = Date.now() - lastRequestTimestamp
-        if (elapsed < cooldownMs) {
-          // Drive the machine into error(COOLDOWN_ACTIVE) via the processing path:
-          //   idle → START → recording → STT_FINAL → processing → PARSE_ERROR → error
-          machine.dispatch({ type: 'START' })
-          machine.dispatch({ type: 'STT_FINAL', transcript: '__cooldown__' })
-          machine.dispatch({
-            type: 'PARSE_ERROR',
-            error: new VoiceFormErrorImpl(
-              'COOLDOWN_ACTIVE',
-              'Request cooldown is active. Please wait before trying again.',
-              true,
-            ),
-          })
-          return
-        }
+      // When cooldownActive is true (set in handleDone), reject start() without
+      // touching the state machine. We stay in idle and call onError directly so
+      // the developer's callback fires reliably without reentrancy guard conflicts.
+      if (cooldownActive) {
+        safeInvokeCallback(
+          config.events?.onError,
+          new VoiceFormErrorImpl(
+            'COOLDOWN_ACTIVE',
+            'Request cooldown is active. Please wait before trying again.',
+            true,
+          ),
+        )
+        return
       }
 
       // Dispatch START to the state machine
@@ -610,10 +719,9 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
 
       // Start STT adapter
       sttEventsActive = true
-      const events = buildSTTEvents()
 
       try {
-        await sttAdapter.start(events)
+        await sttAdapter.start(sttEvents)
       } catch (err) {
         sttEventsActive = false
         // If sttAdapter.start() throws, dispatch an STT error
@@ -678,6 +786,12 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
       if (destroyed) return
       destroyed = true
 
+      // Release the reentrancy lock. If destroy() is called while an async
+      // handler (processing, injecting) is awaiting, handlingTransition stays
+      // true on the closed-over variable. Resetting it here ensures any caller
+      // that inspects the instance after destroy() sees a consistent state. (N-8)
+      handlingTransition = false
+
       // 1. Stop any active STT session
       sttEventsActive = false
       sttAdapter.abort()
@@ -690,6 +804,13 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
         clearTimeout(autoResetTimer)
         autoResetTimer = null
       }
+
+      // 3b. Clear pending cooldown timer so it cannot fire after destroy
+      if (cooldownTimerId !== null) {
+        clearTimeout(cooldownTimerId)
+        cooldownTimerId = null
+      }
+      cooldownActive = false
 
       // 4. Destroy the state machine (clears all listeners)
       machine.destroy()

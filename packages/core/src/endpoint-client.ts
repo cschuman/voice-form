@@ -119,6 +119,14 @@ export interface ResolvedEndpointOptions {
   retries: number
   /** Extra headers merged into every request after the library's own headers. */
   headers: Record<string, string>
+  /**
+   * When true, `debugInfo.rawBody` is populated on HTTP errors.
+   * When false (default), `rawBody` is omitted to prevent LLM provider error
+   * responses — which may echo user transcripts or PII — from being delivered
+   * to `onError` callbacks and potentially forwarded to error tracking services.
+   * (NEW-001 / CWE-209)
+   */
+  debug: boolean
 }
 
 /** Default values for EndpointOptions when not specified by the caller. */
@@ -126,18 +134,21 @@ const OPTION_DEFAULTS: ResolvedEndpointOptions = {
   timeoutMs: 10_000,
   retries: 1,
   headers: {},
+  debug: false,
 }
 
 /**
  * Merge caller-supplied EndpointOptions with defaults.
  *
  * @param options - Partial options from the caller.
+ * @param debug   - The top-level VoiceFormConfig.debug flag.
  */
-export function resolveEndpointOptions(options?: EndpointOptions): ResolvedEndpointOptions {
+export function resolveEndpointOptions(options?: EndpointOptions, debug = false): ResolvedEndpointOptions {
   return {
     timeoutMs: options?.timeoutMs ?? OPTION_DEFAULTS.timeoutMs,
     retries: options?.retries ?? OPTION_DEFAULTS.retries,
     headers: options?.headers ?? OPTION_DEFAULTS.headers,
+    debug,
   }
 }
 
@@ -298,7 +309,13 @@ export class EndpointClient {
         this.activeController = null
 
         if (!response.ok) {
-          const rawBody = await readTruncatedBody(response)
+          // NEW-001: Only read and include rawBody when debug mode is enabled.
+          // LLM provider error responses may echo the user's transcript (PII).
+          // In production, rawBody is omitted so onError callbacks cannot
+          // inadvertently forward sensitive content to error tracking services.
+          const rawBody = this.options.debug
+            ? await readTruncatedBody(response)
+            : undefined
           const is5xx = response.status >= 500
 
           const error = new EndpointError(
@@ -307,7 +324,7 @@ export class EndpointClient {
             response.status,
             {
               httpStatus: response.status,
-              rawBody,
+              ...(rawBody !== undefined ? { rawBody } : {}),
               timestamp: Date.now(),
             },
           )

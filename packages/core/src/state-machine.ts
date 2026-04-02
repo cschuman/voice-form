@@ -232,7 +232,7 @@ function mapSttErrorCode(
  * a no-op via reference equality without deep comparison.
  */
 function warnInvalid(state: VoiceFormState, event: VoiceFormEvent): VoiceFormState {
-  if (typeof process === 'undefined' || process.env['NODE_ENV'] !== 'production') {
+  if (typeof process === 'undefined' || process.env.NODE_ENV !== 'production') {
     console.warn(
       `[voice-form] Invalid transition: ${state.status} + ${event.type} — event ignored.`,
     )

@@ -694,6 +694,33 @@ describe('mountConfirmationPanel', () => {
     expect(instance._listeners.size).toBe(0)
   })
 
+  // ── Escape key double-registration guard ─────────────────────────────────
+
+  it('fires cancel exactly once on Escape even if showPanel was called twice in succession (N-7)', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings)
+
+    const confirmingState: VoiceFormState = {
+      status: 'confirming',
+      transcript: 'hello',
+      confirmation: {
+        transcript: 'hello',
+        parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
+        missingFields: [],
+        invalidFields: [],
+      },
+    }
+
+    // Simulate two consecutive confirming transitions without a hide in between
+    instance._simulateState(confirmingState)
+    instance._simulateState(confirmingState)
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+
+    // cancel() must fire exactly once — not twice from a double-registered listener
+    expect(instance.cancel).toHaveBeenCalledTimes(1)
+    unmount()
+  })
+
   // ── DOM reuse on subsequent confirming states ─────────────────────────────
 
   it('reuses the panel DOM for subsequent confirming states', () => {

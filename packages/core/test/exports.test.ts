@@ -42,16 +42,14 @@ describe('createVoiceForm', () => {
 })
 
 describe('buildPrompt', () => {
-  it('is exported as a function', () => {
-    expect(isExported('buildPrompt')).toBe(true)
-    expect(typeof coreExports.buildPrompt).toBe('function')
+  it('is NOT exported from the browser entry point (server-side utility)', () => {
+    expect(isExported('buildPrompt')).toBe(false)
   })
 })
 
 describe('buildFieldPrompt', () => {
-  it('is exported as a function', () => {
-    expect(isExported('buildFieldPrompt')).toBe(true)
-    expect(typeof coreExports.buildFieldPrompt).toBe('function')
+  it('is NOT exported from the browser entry point (server-side utility)', () => {
+    expect(isExported('buildFieldPrompt')).toBe(false)
   })
 })
 
@@ -103,8 +101,6 @@ describe('type exports — compile-time coverage', () => {
     // to compile, turning a type-system gap into a test failure.
     type _CheckVoiceFormConfig = typeof import('../src/index.js') extends {
       createVoiceForm: unknown
-      buildPrompt: unknown
-      buildFieldPrompt: unknown
       createWebSpeechAdapter: unknown
       validateSchema: unknown
       VoiceFormConfigError: unknown
@@ -121,6 +117,14 @@ describe('type exports — compile-time coverage', () => {
 // ─── Internal symbols must NOT be exported ───────────────────────────────────
 
 describe('internal modules are NOT exported', () => {
+  it('does not export buildPrompt (server-side utility — belongs in ./server subpath)', () => {
+    expect(isExported('buildPrompt')).toBe(false)
+  })
+
+  it('does not export buildFieldPrompt (server-side utility — belongs in ./server subpath)', () => {
+    expect(isExported('buildFieldPrompt')).toBe(false)
+  })
+
   it('does not export createStateMachine', () => {
     expect(isExported('createStateMachine')).toBe(false)
   })

@@ -8,7 +8,7 @@
 // ─── Runtime values ───────────────────────────────────────────────────────────
 
 export { createVoiceForm, VoiceFormConfigError } from './create-voice-form.js'
-export { buildPrompt, buildFieldPrompt, VERSION } from './prompt-builder.js'
+export { VERSION } from './prompt-builder.js'
 export { createWebSpeechAdapter } from './adapters/web-speech.js'
 export { validateSchema } from './schema-validator.js'
 

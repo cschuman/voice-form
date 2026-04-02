@@ -45,7 +45,7 @@
  *    flag to surface a sanitization warning in the confirmation UI.
  */
 
-import type { FieldType, VoiceFormErrorCode } from '../types.js'
+import type { FieldType, FieldSchema, VoiceFormErrorCode } from '../types.js'
 
 // ─── Concrete Error Class ─────────────────────────────────────────────────────
 
@@ -270,4 +270,101 @@ export function sanitizeFieldValue(
       return { value: stripped, wasModified: stripped !== value }
     }
   }
+}
+
+// ─── validateFieldConstraints ─────────────────────────────────────────────────
+
+/**
+ * The result of constraint validation for a single field.
+ */
+export interface ConstraintValidationResult {
+  /** True if the value satisfies all configured constraints. */
+  valid: boolean
+  /**
+   * Human-readable reason for failure.
+   * Only present when `valid` is false.
+   */
+  reason?: string
+}
+
+/**
+ * Evaluates the `FieldValidation` constraints (minLength, maxLength, min, max,
+ * pattern) of a FieldSchema against a sanitized string value.
+ *
+ * This function is called by `buildConfirmationData` after `sanitizeFieldValue`
+ * to enforce developer-specified constraints on LLM-returned values.
+ * Constraint violations are reported via `ConfirmationData.invalidFields` but
+ * do NOT block injection — consistent with the contract in types.ts lines 30–32.
+ *
+ * Security notes:
+ *   NEW-002: Enforces constraints that were previously advertised to the LLM
+ *   in the prompt but never verified on returned values. Without enforcement, a
+ *   constrained field accepts any LLM-returned value (out-of-range numbers,
+ *   over-length strings, etc.) silently.
+ *
+ *   ADV-002 / MED-001: `pattern` evaluation is intentionally SKIPPED.
+ *   Developer-supplied regex patterns applied as `new RegExp(pattern).test()`
+ *   are a ReDoS attack surface — a maliciously crafted or poorly written pattern
+ *   could block the browser's main thread. This will be addressed in a future
+ *   release with a time-bounded evaluation guard.
+ *   TODO: implement time-bounded pattern evaluation (see ADV-002 in CODE_SECURITY_REVIEW.md)
+ *
+ * @param value - The sanitized string value to check (post-stripHtml).
+ * @param field - The FieldSchema containing the validation constraints.
+ * @returns `{ valid: true }` if all constraints pass or none are configured.
+ *          `{ valid: false, reason: string }` on the first failing constraint.
+ */
+export function validateFieldConstraints(
+  value: string,
+  field: FieldSchema,
+): ConstraintValidationResult {
+  const v = field.validation
+  if (!v) return { valid: true }
+
+  // ── minLength ────────────────────────────────────────────────────────────
+  if (v.minLength !== undefined && value.length < v.minLength) {
+    return {
+      valid: false,
+      reason: `Value length ${value.length} is below minLength ${v.minLength}`,
+    }
+  }
+
+  // ── maxLength ────────────────────────────────────────────────────────────
+  if (v.maxLength !== undefined && value.length > v.maxLength) {
+    return {
+      valid: false,
+      reason: `Value length ${value.length} exceeds maxLength ${v.maxLength}`,
+    }
+  }
+
+  // ── min / max (numeric constraints) ─────────────────────────────────────
+  // Only evaluated when the value is a valid finite number. If parsing fails,
+  // we report invalid so constraint-misconfigured values are not silently accepted.
+  if (v.min !== undefined || v.max !== undefined) {
+    const numeric = Number(value)
+    if (!isFinite(numeric)) {
+      return {
+        valid: false,
+        reason: `Value "${value}" is not a valid number — cannot evaluate min/max constraints`,
+      }
+    }
+    if (v.min !== undefined && numeric < v.min) {
+      return {
+        valid: false,
+        reason: `Value ${numeric} is below min ${v.min}`,
+      }
+    }
+    if (v.max !== undefined && numeric > v.max) {
+      return {
+        valid: false,
+        reason: `Value ${numeric} exceeds max ${v.max}`,
+      }
+    }
+  }
+
+  // ── pattern — SKIPPED (ReDoS protection, ADV-002) ────────────────────────
+  // TODO: implement time-bounded pattern evaluation before enabling this.
+  // if (v.pattern !== undefined) { ... }
+
+  return { valid: true }
 }

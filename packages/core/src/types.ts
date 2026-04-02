@@ -369,7 +369,11 @@ export interface VoiceFormEvents {
   /** Called whenever the state machine transitions to a new state. */
   onStateChange?: (state: VoiceFormState) => void
 
-  /** Called with each interim transcript update during recording. */
+  /**
+   * Called with interim (partial) STT results during recording.
+   * WARNING: This value is raw STT output and has NOT been sanitized.
+   * If you render this in the DOM, use textContent — never innerHTML.
+   */
   onInterimTranscript?: (transcript: string) => void
 
   /**
@@ -703,6 +707,8 @@ export type VoiceFormErrorCode =
   // Privacy / UX flow
   | 'PRIVACY_NOT_ACKNOWLEDGED'
   | 'COOLDOWN_ACTIVE'
+  // Developer callback failures
+  | 'BEFORE_CONFIRM_FAILED'
   // Initialization / lifecycle
   | 'SCHEMA_INVALID'
   | 'INIT_FAILED'

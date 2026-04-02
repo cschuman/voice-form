@@ -362,6 +362,10 @@ export function mountConfirmationPanel(
     elements.panel.hidden = false
     isOpen = true
 
+    // Remove before re-adding — idempotent no-op if not already registered.
+    // Prevents double-registration if showPanel() is ever called twice without
+    // an intervening hidePanel() call. (N-7)
+    document.removeEventListener('keydown', onEscape)
     document.addEventListener('keydown', onEscape)
     positionPanel(elements.panel, anchor)
 

@@ -295,14 +295,20 @@ describe('EndpointClient — HTTP error responses', () => {
     })
   })
 
-  it('thrown error includes truncated rawBody (max 500 chars) in debugInfo', async () => {
+  it('thrown error includes truncated rawBody (max 500 chars) in debugInfo when debug=true', async () => {
     const longBody = 'x'.repeat(1000)
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(new Response(longBody, { status: 500 })),
     )
 
-    const client = makeClient({ retries: 0 })
+    // debug: true is required to receive rawBody — see NEW-001
+    const client = new EndpointClient('https://api.example.com/parse', {
+      timeoutMs: 10_000,
+      retries: 0,
+      headers: {},
+      debug: true,
+    })
 
     try {
       await client.parse(makeRequest())
@@ -671,6 +677,132 @@ describe('EndpointError', () => {
       const e = err as EndpointError
       expect(typeof e.debugInfo?.timestamp).toBe('number')
       expect(e.debugInfo?.timestamp).toBeGreaterThan(0)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Suite: NEW-001 — rawBody debug gate (security fix)
+// ---------------------------------------------------------------------------
+
+describe('EndpointClient — NEW-001: rawBody only exposed when debug=true', () => {
+  it('omits rawBody from debugInfo when debug is false (default)', async () => {
+    // Regression: rawBody was previously populated unconditionally, leaking
+    // LLM provider error responses (which may echo user transcripts / PII)
+    // to every onError callback including production error tracking services.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('{"error":"transcript: John Smith SSN 123-45-6789"}', { status: 500 }),
+      ),
+    )
+
+    const client = new EndpointClient('https://api.example.com/parse', {
+      timeoutMs: 10_000,
+      retries: 0,
+      headers: {},
+      debug: false,
+    })
+
+    try {
+      await client.parse(makeRequest())
+      expect.fail('Expected an error to be thrown')
+    } catch (err) {
+      const e = err as EndpointError
+      expect(e.debugInfo).toBeDefined()
+      expect(e.debugInfo?.httpStatus).toBe(500)
+      expect(e.debugInfo?.timestamp).toBeGreaterThan(0)
+      // The critical assertion: rawBody must NOT be present in production mode
+      expect(e.debugInfo?.rawBody).toBeUndefined()
+    }
+  })
+
+  it('omits rawBody from debugInfo when debug is omitted (defaults to false)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('sensitive PII content here', { status: 401 }),
+      ),
+    )
+
+    // makeClient does not pass debug — defaults to false
+    const client = makeClient({ retries: 0 })
+
+    try {
+      await client.parse(makeRequest())
+      expect.fail('Expected an error to be thrown')
+    } catch (err) {
+      const e = err as EndpointError
+      expect(e.debugInfo?.rawBody).toBeUndefined()
+    }
+  })
+
+  it('includes rawBody in debugInfo when debug is true', async () => {
+    const bodyContent = 'LLM provider error: rate limit exceeded'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(bodyContent, { status: 429 })),
+    )
+
+    const client = new EndpointClient('https://api.example.com/parse', {
+      timeoutMs: 10_000,
+      retries: 0,
+      headers: {},
+      debug: true,
+    })
+
+    try {
+      await client.parse(makeRequest())
+      expect.fail('Expected an error to be thrown')
+    } catch (err) {
+      const e = err as EndpointError
+      expect(e.debugInfo?.rawBody).toBe(bodyContent)
+    }
+  })
+
+  it('still truncates rawBody to 500 chars when debug is true', async () => {
+    const longBody = 'x'.repeat(1000)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(longBody, { status: 500 })),
+    )
+
+    const client = new EndpointClient('https://api.example.com/parse', {
+      timeoutMs: 10_000,
+      retries: 0,
+      headers: {},
+      debug: true,
+    })
+
+    try {
+      await client.parse(makeRequest())
+      expect.fail('Expected an error to be thrown')
+    } catch (err) {
+      const e = err as EndpointError
+      expect(e.debugInfo?.rawBody).toHaveLength(500)
+    }
+  })
+
+  it('httpStatus is always present in debugInfo regardless of debug flag', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('Not Found', { status: 404 })),
+    )
+
+    const client = new EndpointClient('https://api.example.com/parse', {
+      timeoutMs: 10_000,
+      retries: 0,
+      headers: {},
+      debug: false,
+    })
+
+    try {
+      await client.parse(makeRequest())
+      expect.fail('Expected an error to be thrown')
+    } catch (err) {
+      const e = err as EndpointError
+      expect(e.debugInfo?.httpStatus).toBe(404)
+      expect(e.debugInfo?.rawBody).toBeUndefined()
     }
   })
 })
