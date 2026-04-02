@@ -39,6 +39,11 @@
       "types": "./dist/ui/index.d.ts",
       "import": "./dist/ui/index.js",
       "require": "./dist/ui/index.cjs"
+    },
+    "./detect-schema": {
+      "types": "./dist/detect-schema.d.ts",
+      "import": "./dist/detect-schema.mjs",
+      "require": "./dist/detect-schema.cjs"
     }
   },
   "main": "./dist/index.cjs",

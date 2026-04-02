@@ -43,7 +43,10 @@ import type {
   StateMachine,
   ValidationResult,
   VoiceFormStrings,
+  StateListener,
+  Unsubscribe,
 } from '../src/types.js'
+import type { InjectorConfig } from '../src/injector.js'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -419,6 +422,35 @@ describe('ConfirmedField', () => {
     const f: ConfirmedField = { label: 'Name', value: 'Alice', confidence: 0.9 }
     expect(f.confidence).toBe(0.9)
   })
+
+  // ── P6-01 additions ──────────────────────────────────────────────────────────
+
+  it('P6-01: accepts optional existingValue for appendMode (FR-108)', () => {
+    const f: ConfirmedField = {
+      label: 'Bio',
+      value: 'new text',
+      existingValue: 'previous text',
+    }
+    expect(f.existingValue).toBe('previous text')
+  })
+
+  it('P6-01: accepts optional userCorrected and originalValue for field correction (FR-114)', () => {
+    const f: ConfirmedField = {
+      label: 'Name',
+      value: 'Alice Smith',
+      userCorrected: true,
+      originalValue: 'Alice Smyth',
+    }
+    expect(f.userCorrected).toBe(true)
+    expect(f.originalValue).toBe('Alice Smyth')
+  })
+
+  it('P6-01: existingValue, userCorrected, originalValue are all optional — minimal object still valid', () => {
+    const f: ConfirmedField = { label: 'Email', value: 'a@b.com' }
+    expect(f.existingValue).toBeUndefined()
+    expect(f.userCorrected).toBeUndefined()
+    expect(f.originalValue).toBeUndefined()
+  })
 })
 
 // ─── ConfirmationData ─────────────────────────────────────────────────────────
@@ -432,9 +464,31 @@ describe('ConfirmationData', () => {
       },
       missingFields: ['age'],
       invalidFields: [{ name: 'dob', value: 'yesterday', reason: 'invalid date' }],
+      appendMode: false,
     }
     expect(d.missingFields).toContain('age')
     expect(d.invalidFields[0]?.reason).toBe('invalid date')
+  })
+
+  // ── P6-01 additions ──────────────────────────────────────────────────────────
+
+  it('P6-01: requires appendMode boolean field (FR-108)', () => {
+    const withAppend: ConfirmationData = {
+      transcript: 'test',
+      parsedFields: {},
+      missingFields: [],
+      invalidFields: [],
+      appendMode: true,
+    }
+    const withoutAppend: ConfirmationData = {
+      transcript: 'test',
+      parsedFields: {},
+      missingFields: [],
+      invalidFields: [],
+      appendMode: false,
+    }
+    expect(withAppend.appendMode).toBe(true)
+    expect(withoutAppend.appendMode).toBe(false)
   })
 })
 
@@ -517,6 +571,7 @@ describe('VoiceFormEvent', () => {
           parsedFields: {},
           missingFields: [],
           invalidFields: [],
+          appendMode: false,
         },
       },
       {
@@ -531,8 +586,19 @@ describe('VoiceFormEvent', () => {
       { type: 'INJECTION_COMPLETE', result: { success: true, fields: {} } },
       { type: 'ACKNOWLEDGE_ERROR' },
       { type: 'AUTO_RESET' },
+      // P6-01: FIELD_CORRECTED event (FR-114)
+      {
+        type: 'FIELD_CORRECTED',
+        confirmation: {
+          transcript: 'test',
+          parsedFields: { name: { label: 'Name', value: 'Alice Smith', userCorrected: true, originalValue: 'Alice Smyth' } },
+          missingFields: [],
+          invalidFields: [],
+          appendMode: false,
+        },
+      },
     ]
-    expect(events).toHaveLength(11)
+    expect(events).toHaveLength(12)
   })
 
   it('is a proper discriminated union — exhaustive switch compiles', () => {
@@ -549,11 +615,37 @@ describe('VoiceFormEvent', () => {
         case 'INJECTION_COMPLETE': return `injected: ${e.result.success}`
         case 'ACKNOWLEDGE_ERROR': return 'ack-error'
         case 'AUTO_RESET': return 'auto-reset'
+        // P6-01: FIELD_CORRECTED arm required for exhaustiveness
+        case 'FIELD_CORRECTED': return `field-corrected: ${Object.keys(e.confirmation.parsedFields).length} fields`
         default: return assertNever(e)
       }
     }
     expect(describeEvent({ type: 'START' })).toBe('start')
     expect(describeEvent({ type: 'CONFIRM' })).toBe('confirm')
+    expect(describeEvent({
+      type: 'FIELD_CORRECTED',
+      confirmation: { transcript: 't', parsedFields: {}, missingFields: [], invalidFields: [], appendMode: false },
+    })).toBe('field-corrected: 0 fields')
+  })
+
+  // ── P6-01 additions ──────────────────────────────────────────────────────────
+
+  it('P6-01: FIELD_CORRECTED carries a complete ConfirmationData payload', () => {
+    const confirmation: ConfirmationData = {
+      transcript: 'my name is Bob',
+      parsedFields: {
+        name: { label: 'Name', value: 'Bob', userCorrected: true, originalValue: 'Rob' },
+      },
+      missingFields: [],
+      invalidFields: [],
+      appendMode: false,
+    }
+    const event: VoiceFormEvent = { type: 'FIELD_CORRECTED', confirmation }
+    if (event.type === 'FIELD_CORRECTED') {
+      expect(event.confirmation.parsedFields['name']?.userCorrected).toBe(true)
+      expect(event.confirmation.parsedFields['name']?.originalValue).toBe('Rob')
+      expect(event.confirmation.appendMode).toBe(false)
+    }
   })
 })
 
@@ -816,11 +908,18 @@ describe('VoiceFormInstance', () => {
     // Implement the interface with stubs to verify shape
     const instance: VoiceFormInstance = {
       getState: (): VoiceFormState => ({ status: 'idle' }),
+      getParsedFields: (): Record<string, ConfirmedField> | null => null,
       start: async (): Promise<void> => { /* noop */ },
+      stop: (): void => { /* noop */ },
       cancel: (): void => { /* noop */ },
       confirm: async (): Promise<void> => { /* noop */ },
       updateSchema: (_s: FormSchema): void => { /* noop */ },
       destroy: (): void => { /* noop */ },
+      subscribe: (_l: StateListener): Unsubscribe => () => { /* noop */ },
+      // P6-01 additions
+      setSchema: (_s: FormSchema): void => { /* noop */ },
+      getSchema: (): FormSchema => ({ fields: [] }),
+      correctField: (_fieldName: string, _value: string): boolean => false,
     }
     expect(typeof instance.getState).toBe('function')
     expect(typeof instance.start).toBe('function')
@@ -828,19 +927,96 @@ describe('VoiceFormInstance', () => {
     expect(typeof instance.confirm).toBe('function')
     expect(typeof instance.updateSchema).toBe('function')
     expect(typeof instance.destroy).toBe('function')
+    // P6-01 additions
+    expect(typeof instance.setSchema).toBe('function')
+    expect(typeof instance.getSchema).toBe('function')
+    expect(typeof instance.correctField).toBe('function')
   })
 
   it('start and confirm return Promise<void>', async () => {
     const instance: VoiceFormInstance = {
       getState: () => ({ status: 'idle' }),
+      getParsedFields: () => null,
       start: async () => { /* noop */ },
+      stop: () => { /* noop */ },
       cancel: () => { /* noop */ },
       confirm: async () => { /* noop */ },
       updateSchema: () => { /* noop */ },
       destroy: () => { /* noop */ },
+      subscribe: (_l) => () => { /* noop */ },
+      setSchema: () => { /* noop */ },
+      getSchema: () => ({ fields: [] }),
+      correctField: () => false,
     }
     await expect(instance.start()).resolves.toBeUndefined()
     await expect(instance.confirm()).resolves.toBeUndefined()
+  })
+
+  // ── P6-01 additions ──────────────────────────────────────────────────────────
+
+  it('P6-01: setSchema accepts a FormSchema and returns void', () => {
+    const schema: FormSchema = { fields: [{ name: 'email', type: 'email' }] }
+    const instance: VoiceFormInstance = {
+      getState: () => ({ status: 'idle' }),
+      getParsedFields: () => null,
+      start: async () => { /* noop */ },
+      stop: () => { /* noop */ },
+      cancel: () => { /* noop */ },
+      confirm: async () => { /* noop */ },
+      updateSchema: () => { /* noop */ },
+      destroy: () => { /* noop */ },
+      subscribe: (_l) => () => { /* noop */ },
+      setSchema: (_s: FormSchema): void => { /* noop */ },
+      getSchema: () => schema,
+      correctField: () => false,
+    }
+    // Type-level: setSchema returns void (not Promise)
+    const result: void = instance.setSchema(schema)
+    expect(result).toBeUndefined()
+  })
+
+  it('P6-01: getSchema returns FormSchema', () => {
+    const schema: FormSchema = {
+      formName: 'Test Form',
+      fields: [{ name: 'name', type: 'text' }],
+    }
+    const instance: VoiceFormInstance = {
+      getState: () => ({ status: 'idle' }),
+      getParsedFields: () => null,
+      start: async () => { /* noop */ },
+      stop: () => { /* noop */ },
+      cancel: () => { /* noop */ },
+      confirm: async () => { /* noop */ },
+      updateSchema: () => { /* noop */ },
+      destroy: () => { /* noop */ },
+      subscribe: (_l) => () => { /* noop */ },
+      setSchema: () => { /* noop */ },
+      getSchema: (): FormSchema => schema,
+      correctField: () => false,
+    }
+    const got = instance.getSchema()
+    expect(got.fields).toHaveLength(1)
+    expect(got.formName).toBe('Test Form')
+  })
+
+  it('P6-01: correctField accepts fieldName and value, returns boolean', () => {
+    const instance: VoiceFormInstance = {
+      getState: () => ({ status: 'idle' }),
+      getParsedFields: () => null,
+      start: async () => { /* noop */ },
+      stop: () => { /* noop */ },
+      cancel: () => { /* noop */ },
+      confirm: async () => { /* noop */ },
+      updateSchema: () => { /* noop */ },
+      destroy: () => { /* noop */ },
+      subscribe: (_l) => () => { /* noop */ },
+      setSchema: () => { /* noop */ },
+      getSchema: () => ({ fields: [] }),
+      correctField: (_fieldName: string, _value: string): boolean => true,
+    }
+    // Type-level: correctField returns boolean
+    const accepted: boolean = instance.correctField('name', 'Alice')
+    expect(accepted).toBe(true)
   })
 })
 
@@ -1033,5 +1209,252 @@ describe('VoiceFormStrings', () => {
     const confirming = strings.announcements.confirming
     const result = typeof confirming === 'function' ? confirming(1) : confirming
     expect(result).toBe('1 field ready.')
+  })
+
+  // ── P6-01 additions ──────────────────────────────────────────────────────────
+
+  it('P6-01: VoiceFormStrings.confirm has v2 correction and append-mode string keys', () => {
+    // Verify the new keys exist on VoiceFormStrings['confirm'] by type assignment
+    const confirm: VoiceFormStrings['confirm'] = {
+      title: 'What I heard',
+      description: 'Review.',
+      cancelLabel: 'Cancel',
+      cancelAriaLabel: 'Cancel',
+      fillLabel: 'Fill',
+      fillLabelEdited: 'Fill (edited)',
+      fillAriaLabel: 'Fill form',
+      dismissAriaLabel: 'Dismiss',
+      unrecognizedLabel: 'Unknown',
+      unrecognizedAriaLabel: 'Unknown field',
+      sanitizedAriaLabel: 'Sanitized',
+      // New v2 edit/correction keys
+      editAriaLabel: 'Edit {label}',
+      saveEditLabel: 'Save',
+      saveEditAriaLabel: 'Save {label} correction',
+      discardEditLabel: 'Cancel',
+      discardEditAriaLabel: 'Discard {label} correction',
+      invalidValueLabel: 'Invalid value',
+      editHintText: 'Press Enter to save, Escape to cancel.',
+      // Append-mode preview keys
+      appendExistingLabel: 'Current:',
+      appendNewLabel: 'Adding:',
+      appendResultLabel: 'Result:',
+      // Unchanged badge (replaces "Not understood" for null fields)
+      unchangedLabel: 'Unchanged',
+    }
+    expect(confirm.editAriaLabel).toBe('Edit {label}')
+    expect(confirm.saveEditLabel).toBe('Save')
+    expect(confirm.appendExistingLabel).toBe('Current:')
+    expect(confirm.appendNewLabel).toBe('Adding:')
+    expect(confirm.appendResultLabel).toBe('Result:')
+    expect(confirm.unchangedLabel).toBe('Unchanged')
+  })
+
+  it('P6-01: VoiceFormStrings.confirm edit aria labels accept function form', () => {
+    const editAriaLabel: VoiceFormStrings['confirm']['editAriaLabel'] =
+      (fieldLabel: string) => `Edit ${fieldLabel}`
+    const saveEditAriaLabel: VoiceFormStrings['confirm']['saveEditAriaLabel'] =
+      (fieldLabel: string) => `Save ${fieldLabel} correction`
+    const discardEditAriaLabel: VoiceFormStrings['confirm']['discardEditAriaLabel'] =
+      (fieldLabel: string) => `Discard ${fieldLabel} correction`
+    expect(typeof editAriaLabel === 'function' ? editAriaLabel('Name') : editAriaLabel).toBe('Edit Name')
+    expect(typeof saveEditAriaLabel === 'function' ? saveEditAriaLabel('Name') : saveEditAriaLabel).toBe('Save Name correction')
+    expect(typeof discardEditAriaLabel === 'function' ? discardEditAriaLabel('Name') : discardEditAriaLabel).toBe('Discard Name correction')
+  })
+
+  it('P6-01: VoiceFormStrings.confirm stepLabel is optional', () => {
+    const confirm: VoiceFormStrings['confirm'] = {
+      title: 'What I heard',
+      description: 'Review.',
+      cancelLabel: 'Cancel',
+      cancelAriaLabel: 'Cancel',
+      fillLabel: 'Fill',
+      fillLabelEdited: 'Fill (edited)',
+      fillAriaLabel: 'Fill form',
+      dismissAriaLabel: 'Dismiss',
+      unrecognizedLabel: 'Unknown',
+      unrecognizedAriaLabel: 'Unknown field',
+      sanitizedAriaLabel: 'Sanitized',
+      editAriaLabel: 'Edit {label}',
+      saveEditLabel: 'Save',
+      saveEditAriaLabel: 'Save {label} correction',
+      discardEditLabel: 'Cancel',
+      discardEditAriaLabel: 'Discard {label} correction',
+      invalidValueLabel: 'Invalid value',
+      editHintText: 'Press Enter to save, Escape to cancel.',
+      appendExistingLabel: 'Current:',
+      appendNewLabel: 'Adding:',
+      appendResultLabel: 'Result:',
+      unchangedLabel: 'Unchanged',
+      // stepLabel omitted — should be optional
+    }
+    expect(confirm.stepLabel).toBeUndefined()
+  })
+
+  it('P6-01: VoiceFormStrings.announcements has fieldEditOpened and fieldEditSaved', () => {
+    const announcements: VoiceFormStrings['announcements'] = {
+      listening: 'Listening.',
+      processing: 'Processing.',
+      confirming: 'Review.',
+      filled: 'Filled.',
+      cancelled: 'Cancelled.',
+      errorPermission: 'Permission error.',
+      errorNoSpeech: 'No speech.',
+      errorEndpoint: 'Endpoint error.',
+      errorTranscriptTooLong: 'Too long.',
+      // New v2 announcement keys (FR-114)
+      fieldEditOpened: 'Editing {label}.',
+      fieldEditSaved: '{label} correction saved.',
+    }
+    expect(announcements.fieldEditOpened).toBe('Editing {label}.')
+    expect(announcements.fieldEditSaved).toBe('{label} correction saved.')
+  })
+
+  it('P6-01: VoiceFormStrings.announcements fieldEditOpened/fieldEditSaved accept function form', () => {
+    const fieldEditOpened: VoiceFormStrings['announcements']['fieldEditOpened'] =
+      (fieldLabel: string) => `Editing ${fieldLabel}.`
+    const fieldEditSaved: VoiceFormStrings['announcements']['fieldEditSaved'] =
+      (fieldLabel: string) => `${fieldLabel} correction saved.`
+    expect(typeof fieldEditOpened === 'function' ? fieldEditOpened('Name') : fieldEditOpened).toBe('Editing Name.')
+    expect(typeof fieldEditSaved === 'function' ? fieldEditSaved('Email') : fieldEditSaved).toBe('Email correction saved.')
+  })
+})
+
+// ─── P6-01: VoiceFormConfig v2 additions ─────────────────────────────────────
+
+describe('VoiceFormConfig — P6-01 v2 additions', () => {
+  it('accepts appendMode boolean flag (FR-108)', () => {
+    const config: VoiceFormConfig = {
+      endpoint: '/api/parse',
+      schema: { fields: [{ name: 'bio', type: 'textarea' }] },
+      appendMode: true,
+    }
+    expect(config.appendMode).toBe(true)
+  })
+
+  it('accepts multiStep boolean flag (FR-111)', () => {
+    const config: VoiceFormConfig = {
+      endpoint: '/api/parse',
+      schema: { fields: [{ name: 'name', type: 'text' }] },
+      multiStep: true,
+    }
+    expect(config.multiStep).toBe(true)
+  })
+
+  it('accepts autoDetectSchema boolean flag (FR-113)', () => {
+    const config: VoiceFormConfig = {
+      endpoint: '/api/parse',
+      schema: { fields: [{ name: 'name', type: 'text' }] },
+      autoDetectSchema: true,
+    }
+    expect(config.autoDetectSchema).toBe(true)
+  })
+
+  it('accepts onSchemaDetected callback (FR-112)', () => {
+    const schema: FormSchema = { fields: [{ name: 'email', type: 'email' }] }
+    const config: VoiceFormConfig = {
+      endpoint: '/api/parse',
+      schema,
+      onSchemaDetected: (detected: FormSchema): FormSchema => detected,
+    }
+    expect(typeof config.onSchemaDetected).toBe('function')
+    // Callback may also return void
+    const voidConfig: VoiceFormConfig = {
+      endpoint: '/api/parse',
+      schema,
+      onSchemaDetected: (_detected: FormSchema): void => { /* noop */ },
+    }
+    expect(typeof voidConfig.onSchemaDetected).toBe('function')
+  })
+
+  it('accepts allowFieldCorrection boolean flag (FR-114)', () => {
+    const config: VoiceFormConfig = {
+      endpoint: '/api/parse',
+      schema: { fields: [{ name: 'name', type: 'text' }] },
+      allowFieldCorrection: false,
+    }
+    expect(config.allowFieldCorrection).toBe(false)
+  })
+
+  it('all new v2 config fields are optional — existing minimal config is still valid', () => {
+    const config: VoiceFormConfig = {
+      endpoint: '/api/parse',
+      schema: { fields: [{ name: 'name', type: 'text' }] },
+    }
+    expect(config.appendMode).toBeUndefined()
+    expect(config.multiStep).toBeUndefined()
+    expect(config.autoDetectSchema).toBeUndefined()
+    expect(config.onSchemaDetected).toBeUndefined()
+    expect(config.allowFieldCorrection).toBeUndefined()
+  })
+})
+
+// ─── P6-01: InjectorConfig v2 additions ──────────────────────────────────────
+
+describe('InjectorConfig — P6-01 v2 additions', () => {
+  it('accepts appendMode optional boolean (FR-108)', () => {
+    const config: InjectorConfig = {
+      appendMode: true,
+    }
+    expect(config.appendMode).toBe(true)
+  })
+
+  it('accepts multiStep optional boolean (FR-111)', () => {
+    const config: InjectorConfig = {
+      multiStep: true,
+    }
+    expect(config.multiStep).toBe(true)
+  })
+
+  it('all new fields are optional — empty InjectorConfig is still valid', () => {
+    const config: InjectorConfig = {}
+    expect(config.appendMode).toBeUndefined()
+    expect(config.multiStep).toBeUndefined()
+  })
+})
+
+// ─── P6-01: VoiceFormCSSVars v2 additions ────────────────────────────────────
+
+describe('VoiceFormCSSVars — P6-01 v2 additions', () => {
+  it('accepts all new v2 CSS custom property keys', () => {
+    const vars: Partial<VoiceFormCSSVars> = {
+      '--vf-unchanged-badge-bg': '#f3f4f6',
+      '--vf-unchanged-badge-text': '#6b7280',
+      '--vf-append-existing-color': '#9ca3af',
+      '--vf-append-new-color': '#2563eb',
+      '--vf-field-edit-btn-color': '#6b7280',
+      '--vf-field-edit-btn-hover-color': '#111827',
+      '--vf-field-edit-input-border': '#2563eb',
+      '--vf-field-edit-input-bg': '#eff6ff',
+      '--vf-field-edit-invalid-color': '#dc2626',
+      '--vf-field-corrected-indicator': '#2563eb',
+    }
+    expect(vars['--vf-unchanged-badge-bg']).toBe('#f3f4f6')
+    expect(vars['--vf-field-edit-input-bg']).toBe('#eff6ff')
+    expect(vars['--vf-field-corrected-indicator']).toBe('#2563eb')
+  })
+
+  it('new CSS vars are all string values', () => {
+    // Verify each new key is typed as string (compile-time check via assignment)
+    const bg: VoiceFormCSSVars['--vf-unchanged-badge-bg'] = '#ffffff'
+    const text: VoiceFormCSSVars['--vf-unchanged-badge-text'] = '#000000'
+    const existingColor: VoiceFormCSSVars['--vf-append-existing-color'] = '#aaaaaa'
+    const newColor: VoiceFormCSSVars['--vf-append-new-color'] = '#bbbbbb'
+    const btnColor: VoiceFormCSSVars['--vf-field-edit-btn-color'] = '#cccccc'
+    const btnHover: VoiceFormCSSVars['--vf-field-edit-btn-hover-color'] = '#dddddd'
+    const inputBorder: VoiceFormCSSVars['--vf-field-edit-input-border'] = '#eeeeee'
+    const inputBg: VoiceFormCSSVars['--vf-field-edit-input-bg'] = '#111111'
+    const invalidColor: VoiceFormCSSVars['--vf-field-edit-invalid-color'] = '#222222'
+    const correctedIndicator: VoiceFormCSSVars['--vf-field-corrected-indicator'] = '#333333'
+    expect(bg).toBe('#ffffff')
+    expect(text).toBe('#000000')
+    expect(existingColor).toBeDefined()
+    expect(newColor).toBeDefined()
+    expect(btnColor).toBeDefined()
+    expect(btnHover).toBeDefined()
+    expect(inputBorder).toBeDefined()
+    expect(inputBg).toBeDefined()
+    expect(invalidColor).toBeDefined()
+    expect(correctedIndicator).toBeDefined()
   })
 })

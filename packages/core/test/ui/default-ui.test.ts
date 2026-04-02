@@ -51,6 +51,17 @@ function makeStrings(overrides: Partial<VoiceFormStrings> = {}): VoiceFormString
       unrecognizedLabel: 'Not understood',
       unrecognizedAriaLabel: 'Not understood — this field will not be filled',
       sanitizedAriaLabel: 'Value was modified — HTML was removed',
+      editAriaLabel: 'Edit {label}',
+      saveEditLabel: 'Save',
+      saveEditAriaLabel: 'Save {label} correction',
+      discardEditLabel: 'Cancel',
+      discardEditAriaLabel: 'Discard {label} correction',
+      invalidValueLabel: 'Invalid value',
+      editHintText: 'Press Enter to save, Escape to cancel.',
+      appendExistingLabel: 'Current:',
+      appendNewLabel: 'Adding:',
+      appendResultLabel: 'Result:',
+      unchangedLabel: 'Unchanged',
     },
     privacy: {
       acknowledgeLabel: 'I understand',
@@ -67,6 +78,8 @@ function makeStrings(overrides: Partial<VoiceFormStrings> = {}): VoiceFormString
       errorNoSpeech: 'Nothing heard. Voice input ready.',
       errorEndpoint: 'Error: Could not process speech. Tap to try again.',
       errorTranscriptTooLong: 'That was too much. Try a shorter response.',
+      fieldEditOpened: 'Editing {label}.',
+      fieldEditSaved: '{label} correction saved.',
     },
     ...overrides,
   }
@@ -92,6 +105,9 @@ function makeInstance(initialState: VoiceFormState = { status: 'idle' }): VoiceF
     cancel: vi.fn(),
     confirm: vi.fn().mockResolvedValue(undefined),
     updateSchema: vi.fn(),
+    setSchema: vi.fn(),
+    getSchema: vi.fn().mockReturnValue({ fields: [] }),
+    correctField: vi.fn().mockReturnValue(false),
     destroy: vi.fn(),
     subscribe(listener: StateListener) {
       listeners.add(listener)
@@ -257,6 +273,7 @@ describe('mountDefaultUI', () => {
         parsedFields: {},
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
     const button = container.querySelector('button')

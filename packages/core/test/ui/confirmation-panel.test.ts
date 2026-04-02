@@ -66,6 +66,17 @@ function makeStrings(): VoiceFormStrings {
       unrecognizedLabel: 'Not understood',
       unrecognizedAriaLabel: 'Not understood — this field will not be filled',
       sanitizedAriaLabel: 'Value was modified — HTML was removed',
+      editAriaLabel: 'Edit {label}',
+      saveEditLabel: 'Save',
+      saveEditAriaLabel: 'Save {label} correction',
+      discardEditLabel: 'Cancel',
+      discardEditAriaLabel: 'Discard {label} correction',
+      invalidValueLabel: 'Invalid value',
+      editHintText: 'Press Enter to save, Escape to cancel.',
+      appendExistingLabel: 'Current:',
+      appendNewLabel: 'Adding:',
+      appendResultLabel: 'Result:',
+      unchangedLabel: 'Unchanged',
     },
     privacy: {
       acknowledgeLabel: 'I understand',
@@ -82,6 +93,8 @@ function makeStrings(): VoiceFormStrings {
       errorNoSpeech: 'Nothing heard. Voice input ready.',
       errorEndpoint: 'Error: Could not process speech. Tap to try again.',
       errorTranscriptTooLong: 'That was too much. Try a shorter response.',
+      fieldEditOpened: 'Editing {label}.',
+      fieldEditSaved: '{label} correction saved.',
     },
   }
 }
@@ -106,6 +119,9 @@ function makeInstance(): VoiceFormInstance & {
     cancel: vi.fn(),
     confirm: vi.fn().mockResolvedValue(undefined),
     updateSchema: vi.fn(),
+    setSchema: vi.fn(),
+    getSchema: vi.fn().mockReturnValue({ fields: [] }),
+    correctField: vi.fn().mockReturnValue(false),
     destroy: vi.fn(),
     subscribe(listener: StateListener) {
       listeners.add(listener)
@@ -176,6 +192,7 @@ describe('mountConfirmationPanel', () => {
         },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -195,6 +212,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -230,6 +248,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
     const dialog = document.querySelector('[role="dialog"]')
@@ -247,6 +266,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
     const dialog = document.querySelector('[role="dialog"]')
@@ -266,6 +286,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
     const dialog = document.querySelector('[role="dialog"]')
@@ -285,6 +306,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
     const dl = document.querySelector('dl')
@@ -305,6 +327,7 @@ describe('mountConfirmationPanel', () => {
         },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
     const dts = document.querySelectorAll('dt')
@@ -332,6 +355,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { name: { label: 'Name', value: maliciousValue } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -368,6 +392,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { name: { label: 'Name', value: value } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -399,6 +424,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { name: { label: 'Name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -422,6 +448,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { name: { label: 'Name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -445,6 +472,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { name: { label: 'Name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -473,6 +501,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: ['phone'],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -496,6 +525,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: {},
         missingFields: ['firstName'],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -518,6 +548,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -539,6 +570,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -562,6 +594,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -587,6 +620,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -613,6 +647,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -641,6 +676,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -660,6 +696,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -678,6 +715,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -707,6 +745,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     }
 
@@ -734,6 +773,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Jordan' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 
@@ -751,6 +791,7 @@ describe('mountConfirmationPanel', () => {
         parsedFields: { firstName: { label: 'First name', value: 'Alex' } },
         missingFields: [],
         invalidFields: [],
+        appendMode: false,
       },
     })
 

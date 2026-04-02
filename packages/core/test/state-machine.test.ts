@@ -49,6 +49,7 @@ function makeConfirmationData(transcript = 'hello world'): ConfirmationData {
     parsedFields: { name: { label: 'Name', value: 'Alice' } },
     missingFields: [],
     invalidFields: [],
+    appendMode: false,
   }
 }
 
@@ -261,6 +262,94 @@ describe('transition() — pure reducer', () => {
       })
       expect(next).toStrictEqual(confirming)
     })
+
+    // ── P6-02: FIELD_CORRECTED ──────────────────────────────────────────────────
+
+    it('P6-02: FIELD_CORRECTED → confirming with new confirmation payload', () => {
+      const correctedConfirmation: ConfirmationData = {
+        transcript: 'hello world',
+        parsedFields: {
+          name: {
+            label: 'Name',
+            value: 'Alice Smith',
+            userCorrected: true,
+            originalValue: 'Alice',
+          },
+        },
+        missingFields: [],
+        invalidFields: [],
+        appendMode: false,
+      }
+      const next = transition(confirming, {
+        type: 'FIELD_CORRECTED',
+        confirmation: correctedConfirmation,
+      })
+      expect(next.status).toBe('confirming')
+      if (next.status === 'confirming') {
+        expect(next.confirmation).toStrictEqual(correctedConfirmation)
+        expect(next.transcript).toBe('hello world')
+      }
+    })
+
+    it('P6-02: FIELD_CORRECTED returns a new state object reference (immutable update)', () => {
+      const correctedConfirmation: ConfirmationData = {
+        transcript: 'hello world',
+        parsedFields: {
+          name: { label: 'Name', value: 'Alice Corrected', userCorrected: true, originalValue: 'Alice' },
+        },
+        missingFields: [],
+        invalidFields: [],
+        appendMode: false,
+      }
+      const nextState = transition(confirming, {
+        type: 'FIELD_CORRECTED',
+        confirmation: correctedConfirmation,
+      })
+      // Must be a new reference — not the same object
+      expect(nextState).not.toBe(confirming)
+    })
+
+    it('P6-02: FIELD_CORRECTED sets confirmation to the event payload, not the old confirmation', () => {
+      const newConfirmation: ConfirmationData = {
+        transcript: 'hello world',
+        parsedFields: {
+          name: { label: 'Name', value: 'Bob', userCorrected: true, originalValue: 'Alice' },
+        },
+        missingFields: [],
+        invalidFields: [],
+        appendMode: false,
+      }
+      const nextState = transition(confirming, {
+        type: 'FIELD_CORRECTED',
+        confirmation: newConfirmation,
+      })
+      if (nextState.status === 'confirming') {
+        // Confirmation is the new one, not the original
+        expect(nextState.confirmation).toBe(newConfirmation)
+        expect(nextState.confirmation).not.toBe(confirmation)
+      }
+    })
+
+    it('P6-02: FIELD_CORRECTED preserves transcript from existing state', () => {
+      const confirming2: VoiceFormState = {
+        status: 'confirming',
+        transcript: 'specific transcript text',
+        confirmation: makeConfirmationData(),
+      }
+      const next = transition(confirming2, {
+        type: 'FIELD_CORRECTED',
+        confirmation: {
+          transcript: 'specific transcript text',
+          parsedFields: {},
+          missingFields: [],
+          invalidFields: [],
+          appendMode: false,
+        },
+      })
+      if (next.status === 'confirming') {
+        expect(next.transcript).toBe('specific transcript text')
+      }
+    })
   })
 
   // ── injecting transitions ───────────────────────────────────────────────────
@@ -361,6 +450,51 @@ describe('transition() — pure reducer', () => {
       // There is no CONFIRM event handler for idle; verifying CONFIRM returns idle
       const next = transition(idle, { type: 'CONFIRM' })
       expect(next).toStrictEqual(idle)
+    })
+
+    // ── P6-02: FIELD_CORRECTED ignored outside confirming ──────────────────────
+
+    it('P6-02: FIELD_CORRECTED from idle → ignored (same state reference returned)', () => {
+      const idle: VoiceFormState = { status: 'idle' }
+      const correctedConfirmation: ConfirmationData = {
+        transcript: 'test',
+        parsedFields: { name: { label: 'Name', value: 'Alice' } },
+        missingFields: [],
+        invalidFields: [],
+        appendMode: false,
+      }
+      const next = transition(idle, { type: 'FIELD_CORRECTED', confirmation: correctedConfirmation })
+      // Same reference means the event was ignored
+      expect(next).toBe(idle)
+    })
+
+    it('P6-02: FIELD_CORRECTED from recording → ignored (same state reference returned)', () => {
+      const recording: VoiceFormState = { status: 'recording', interimTranscript: '' }
+      const correctedConfirmation: ConfirmationData = {
+        transcript: 'test',
+        parsedFields: {},
+        missingFields: [],
+        invalidFields: [],
+        appendMode: false,
+      }
+      const next = transition(recording, { type: 'FIELD_CORRECTED', confirmation: correctedConfirmation })
+      expect(next).toBe(recording)
+    })
+
+    it('P6-02: FIELD_CORRECTED from injecting → ignored (same state reference returned)', () => {
+      const injecting: VoiceFormState = {
+        status: 'injecting',
+        confirmation: makeConfirmationData(),
+      }
+      const correctedConfirmation: ConfirmationData = {
+        transcript: 'test',
+        parsedFields: {},
+        missingFields: [],
+        invalidFields: [],
+        appendMode: false,
+      }
+      const next = transition(injecting, { type: 'FIELD_CORRECTED', confirmation: correctedConfirmation })
+      expect(next).toBe(injecting)
     })
 
     it('idle → done (no direct path)', () => {

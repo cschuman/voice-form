@@ -311,6 +311,7 @@ function buildConfirmationData(
     parsedFields,
     missingFields,
     invalidFields,
+    appendMode: false,
   }
 }
 
@@ -780,6 +781,46 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
 
       currentSchema = validateSchema(schema)
       injector.clearCache()
+    },
+
+    /**
+     * Replace the active schema. v2 rename of updateSchema().
+     * updateSchema() remains as a deprecated alias through v3.
+     * (P6-07 will add the deprecation warning on updateSchema().)
+     */
+    setSchema(schema: FormSchema): void {
+      if (destroyed) return
+      const state = machine.getState()
+      if (state.status !== 'idle') {
+        throw new VoiceFormErrorImpl(
+          'INVALID_TRANSITION',
+          'setSchema() can only be called from the idle state.',
+          false,
+        )
+      }
+
+      currentSchema = validateSchema(schema)
+      injector.clearCache()
+    },
+
+    /**
+     * Returns the schema currently in use.
+     */
+    getSchema(): FormSchema {
+      return currentSchema
+    },
+
+    /**
+     * Correct the value of a single field while in confirming state.
+     * Full implementation is in P6-08; this stub satisfies the interface.
+     * Returns false if not in confirming state or if instance is destroyed.
+     */
+    correctField(_fieldName: string, _value: string): boolean {
+      if (destroyed) return false
+      const state = machine.getState()
+      if (state.status !== 'confirming') return false
+      // Full sanitization and FIELD_CORRECTED dispatch is implemented in P6-08.
+      return false
     },
 
     destroy(): void {

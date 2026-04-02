@@ -166,6 +166,17 @@ function transitionFromConfirming(
     case 'CANCEL':
       return { status: 'idle' }
 
+    case 'FIELD_CORRECTED':
+      // Immutable update: produce a new state object with the new ConfirmationData.
+      // CRITICAL (security review #1): NEVER mutate state.confirmation in place.
+      // The event carries the fully-formed new ConfirmationData produced by
+      // correctField() in the VoiceFormInstance layer.
+      return {
+        status: 'confirming',
+        transcript: state.transcript,
+        confirmation: event.confirmation, // new object, not mutated
+      }
+
     default:
       return warnInvalid(state, event)
   }

@@ -83,6 +83,19 @@ export interface InjectorConfig {
     fieldName: string,
     value: string | boolean | string[],
   ) => void | Promise<void>
+
+  /**
+   * When true, string values for text/textarea fields are appended to
+   * existing DOM values. (FR-108)
+   */
+  appendMode?: boolean
+
+  /**
+   * When true, fields not found in the DOM are treated as expected
+   * (console.warn instead of console.error; InjectionResult.success
+   * is not failed solely because of missing elements). (FR-111)
+   */
+  multiStep?: boolean
 }
 
 /**

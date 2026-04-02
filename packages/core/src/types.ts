@@ -303,11 +303,39 @@ export interface ConfirmedField {
   value: string
   /** Optional confidence score from the LLM (0–1). */
   confidence?: number
+
+  /**
+   * When appendMode is true and a pre-existing DOM value was found,
+   * holds that pre-existing value. The injected value will be
+   * `existingValue + ' ' + value`.
+   * Undefined when appendMode is false or the existing DOM value was empty.
+   * (FR-108)
+   */
+  existingValue?: string
+
+  /**
+   * True when the user manually edited this field's value in the
+   * confirmation panel. The original LLM value is in `originalValue`.
+   * (FR-114)
+   */
+  userCorrected?: boolean
+
+  /**
+   * The LLM-parsed value before user correction.
+   * Only present when userCorrected is true.
+   * (FR-114)
+   */
+  originalValue?: string
 }
 
 /**
  * Data presented to the user in the confirmation step.
  * The default UI renders this; in headless mode the developer renders it.
+ *
+ * CRITICAL (security review #1): Treat as immutable once it enters `confirming`
+ * state. The `FIELD_CORRECTED` event produces a new object via spread — never
+ * mutate `parsedFields` in place. `useSyncExternalStore.getSnapshot` must
+ * return a stable reference per render pass.
  */
 export interface ConfirmationData {
   /** The raw transcript from STT, shown so the user can verify what was heard. */
@@ -330,6 +358,13 @@ export interface ConfirmationData {
    * The value is still present and can be injected; this is advisory.
    */
   invalidFields: ReadonlyArray<{ name: string; value: string; reason: string }>
+
+  /**
+   * True when appendMode was active for this session.
+   * Used by the confirmation panel to render the append preview rows.
+   * (FR-108)
+   */
+  appendMode: boolean
 }
 
 // ─── Injection Result ─────────────────────────────────────────────────────────
@@ -429,6 +464,12 @@ export type VoiceFormEvent =
   | { type: 'INJECTION_COMPLETE'; result: InjectionResult }
   | { type: 'ACKNOWLEDGE_ERROR' }
   | { type: 'AUTO_RESET' }
+  /**
+   * Dispatched when the user saves a correction in the confirmation panel.
+   * Carries the complete new ConfirmationData produced by immutable update.
+   * Valid only in confirming state. (FR-114, security review #1)
+   */
+  | { type: 'FIELD_CORRECTED'; confirmation: ConfirmationData }
 
 // ─── State Machine Interface ──────────────────────────────────────────────────
 
@@ -531,6 +572,29 @@ export interface VoiceFormCSSVars {
   '--vf-font-family': string
   /** z-index for overlay elements. Default: 100. */
   '--vf-z-index': string
+
+  // ── v2 additions ──────────────────────────────────────────────────────────
+
+  /** Background color for the "Unchanged" badge. Default: #f3f4f6. */
+  '--vf-unchanged-badge-bg': string
+  /** Text color for the "Unchanged" badge. Default: #6b7280. */
+  '--vf-unchanged-badge-text': string
+  /** Color for the existing value in append-mode preview. Default: #9ca3af. */
+  '--vf-append-existing-color': string
+  /** Color for the new value in append-mode preview. Default: #2563eb. */
+  '--vf-append-new-color': string
+  /** Color for the field edit button. Default: #6b7280. */
+  '--vf-field-edit-btn-color': string
+  /** Hover color for the field edit button. Default: #111827. */
+  '--vf-field-edit-btn-hover-color': string
+  /** Border color of the field edit input. Default: #2563eb. */
+  '--vf-field-edit-input-border': string
+  /** Background color of the field edit input. Default: #eff6ff. */
+  '--vf-field-edit-input-bg': string
+  /** Color for invalid-value feedback in edit mode. Default: #dc2626. */
+  '--vf-field-edit-invalid-color': string
+  /** Indicator color shown on user-corrected fields. Default: #2563eb. */
+  '--vf-field-corrected-indicator': string
 }
 
 /**
@@ -632,7 +696,7 @@ export interface VoiceFormStrings {
     cancelAriaLabel: string
     /** Fill button text. Default: "Fill form". */
     fillLabel: string
-    /** Fill button text when fields were manually corrected (v2). */
+    /** Fill button text when fields were manually corrected. Default: "Fill form (edited)". */
     fillLabelEdited: string
     /** Fill button aria-label. */
     fillAriaLabel: string
@@ -644,6 +708,51 @@ export interface VoiceFormStrings {
     unrecognizedAriaLabel: string
     /** Sanitization warning icon aria-label. */
     sanitizedAriaLabel: string
+
+    // ── v2 field-correction strings (FR-114) ──────────────────────────────────
+
+    /**
+     * Edit button aria-label. Receives field label.
+     * Default: "Edit {label}". Accepts a function for dynamic labels.
+     */
+    editAriaLabel: string | ((fieldLabel: string) => string)
+    /** Save button label in edit mode. Default: "Save". */
+    saveEditLabel: string
+    /**
+     * Save button aria-label. Receives field label.
+     * Default: "Save {label} correction".
+     */
+    saveEditAriaLabel: string | ((fieldLabel: string) => string)
+    /** Discard button label in edit mode. Default: "Cancel". */
+    discardEditLabel: string
+    /**
+     * Discard button aria-label. Receives field label.
+     * Default: "Discard {label} correction".
+     */
+    discardEditAriaLabel: string | ((fieldLabel: string) => string)
+    /** Shown when sanitization rejects a draft correction. Default: "Invalid value". */
+    invalidValueLabel: string
+    /** Screen reader hint in edit mode. Default: "Press Enter to save, Escape to cancel." */
+    editHintText: string
+
+    // ── v2 append-mode preview strings (FR-108) ───────────────────────────────
+
+    /** "Current:" label in append mode preview. Default: "Current:". */
+    appendExistingLabel: string
+    /** "Adding:" label in append mode preview. Default: "Adding:". */
+    appendNewLabel: string
+    /** "Result:" label in append mode preview. Default: "Result:". */
+    appendResultLabel: string
+
+    // ── v2 multi-step strings (FR-111) ────────────────────────────────────────
+
+    /** Optional step indicator, e.g. "Step 2 of 3: Address". */
+    stepLabel?: string
+
+    // ── v2 badge for null/unchanged fields ────────────────────────────────────
+
+    /** Badge text for null fields (replaces v1 "Not understood"). Default: "Unchanged". */
+    unchangedLabel: string
   }
 
   /** Strings for the privacy notice panel. */
@@ -679,6 +788,20 @@ export interface VoiceFormStrings {
     errorEndpoint: string
     /** Transcript too long announcement. */
     errorTranscriptTooLong: string
+
+    // ── v2 field-correction announcements (FR-114) ────────────────────────────
+
+    /**
+     * Announced when a field enters edit mode.
+     * Receives field label. Accepts a function for dynamic labels.
+     */
+    fieldEditOpened: string | ((fieldLabel: string) => string)
+
+    /**
+     * Announced when a field correction is saved.
+     * Receives field label. Accepts a function for dynamic labels.
+     */
+    fieldEditSaved: string | ((fieldLabel: string) => string)
   }
 }
 
@@ -900,6 +1023,51 @@ export interface VoiceFormConfig {
    * Disable before deploying to production.
    */
   debug?: boolean
+
+  /**
+   * When true, new string values for text/textarea fields are appended
+   * to existing DOM values separated by a single space.
+   * No effect on number, date, boolean, select, checkbox, or radio fields.
+   * Default: false. (FR-108)
+   */
+  appendMode?: boolean
+
+  /**
+   * When true, fields not resolved in the current DOM during injection
+   * are treated as warnings (console.warn) rather than errors (console.error).
+   * InjectionResult.success is still true when all found fields injected.
+   * Required for multi-step/wizard forms. Default: false. (FR-111)
+   */
+  multiStep?: boolean
+
+  /**
+   * When true and no explicit `schema` is provided, voice-form scans
+   * the formElement to infer a schema from the DOM.
+   * Requires formElement to be set. (FR-113)
+   * The detected schema is passed to onSchemaDetected before use.
+   * If both schema and autoDetectSchema are provided, schema wins and
+   * a console.warn is emitted.
+   *
+   * Implementation note: autoDetectSchema triggers a dynamic import()
+   * of the detect-schema subpath module inside createVoiceForm. It MUST
+   * NOT be a static import at the top of create-voice-form.ts.
+   * (security review #11)
+   */
+  autoDetectSchema?: boolean
+
+  /**
+   * Called once after schema auto-detection completes.
+   * Return a modified FormSchema to override the detected schema.
+   * Return undefined or void to accept as-is.
+   * The returned schema is validated by validateSchema(). (FR-112)
+   */
+  onSchemaDetected?: (schema: FormSchema) => FormSchema | void
+
+  /**
+   * When false, the confirmation panel shows values as static text
+   * with no edit controls rendered. Default: true. (FR-114)
+   */
+  allowFieldCorrection?: boolean
 }
 
 // ─── Instance ─────────────────────────────────────────────────────────────────
@@ -966,6 +1134,40 @@ export interface VoiceFormInstance {
    * @throws {VoiceFormError} with code SCHEMA_INVALID if the new schema fails validation.
    */
   updateSchema(schema: FormSchema): void
+
+  /**
+   * Replace the active schema. Valid only from idle state.
+   * Validates the new schema synchronously; throws VoiceFormConfigError on failure.
+   * Clears the injector's element cache.
+   * This is the v2 rename of updateSchema(). updateSchema() remains as a
+   * deprecated alias (console.warn on call) until v3. (FR-110)
+   *
+   * @throws {VoiceFormError} INVALID_TRANSITION if not in idle state.
+   * @throws {VoiceFormConfigError} SCHEMA_INVALID if schema is invalid.
+   */
+  setSchema(schema: FormSchema): void
+
+  /**
+   * Returns the schema currently in use.
+   * Useful for multi-step forms where the developer inspects what schema
+   * was most recently set.
+   */
+  getSchema(): FormSchema
+
+  /**
+   * Correct the value of a single field while in confirming state.
+   * Produces a FIELD_CORRECTED event that replaces ConfirmationData
+   * immutably. Valid only from confirming state. (FR-114)
+   *
+   * The value is passed through sanitizeFieldValue before being applied.
+   * If sanitization produces an empty string from a non-empty input,
+   * the call is a no-op and returns false.
+   *
+   * @param fieldName  The FieldSchema.name of the field to correct.
+   * @param value      The corrected string value from the user.
+   * @returns true if the correction was applied, false if rejected.
+   */
+  correctField(fieldName: string, value: string): boolean
 
   /**
    * Remove all DOM elements created by voice-form and release all

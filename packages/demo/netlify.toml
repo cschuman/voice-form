@@ -1,0 +1,9 @@
+[build]
+  command = "pnpm build"
+  publish = "dist"
+
+# SPA redirect: send all routes to index.html so client-side routing works
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

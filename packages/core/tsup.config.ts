@@ -21,6 +21,15 @@ export default defineConfig([
     outDir: 'dist',
   },
   {
+    // detect-schema subpath — separate tree-shakeable entry point
+    // MUST NOT be statically imported from create-voice-form.ts or index.ts
+    entry: { 'detect-schema': 'src/detect-schema.ts' },
+    format: ['esm', 'cjs'],
+    dts: true,
+    sourcemap: true,
+    outDir: 'dist',
+  },
+  {
     // CDN / script-tag IIFE build — exposes window.VoiceForm
     // Includes both the headless core and the default UI in a single file.
     entry: { voiceform: 'src/index.ts' },
