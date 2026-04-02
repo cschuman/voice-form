@@ -2,6 +2,12 @@
   command = "pnpm build"
   publish = "dist"
 
+# Proxy /api/voice-parse to the Netlify Function
+[[redirects]]
+  from = "/api/voice-parse"
+  to = "/.netlify/functions/voice-parse"
+  status = 200
+
 # SPA redirect: send all routes to index.html so client-side routing works
 [[redirects]]
   from = "/*"
