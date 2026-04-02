@@ -22,9 +22,9 @@ Complete documentation of the voice-form public API. All types and functions exp
 
 ## Core Factory
 
-### `createVoiceForm(config): Promise<VoiceFormInstance>`
+### `createVoiceForm(config): VoiceFormInstance`
 
-Creates and initializes a voice-form instance.
+Creates and returns a voice-form instance synchronously.
 
 **Parameters:**
 

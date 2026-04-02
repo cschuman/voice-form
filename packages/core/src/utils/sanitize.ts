@@ -364,7 +364,12 @@ export function validateFieldConstraints(
 
   // ── pattern — SKIPPED (ReDoS protection, ADV-002) ────────────────────────
   // TODO: implement time-bounded pattern evaluation before enabling this.
-  // if (v.pattern !== undefined) { ... }
+  if (v.pattern !== undefined && process.env.NODE_ENV !== 'production') {
+    console.warn(
+      `[voice-form] Pattern validation is not yet implemented due to ReDoS risk. ` +
+      `Pattern "${v.pattern}" on field "${field.name}" will be ignored. See docs/SECURITY.md.`
+    )
+  }
 
   return { valid: true }
 }

@@ -106,6 +106,7 @@
     if (ui !== undefined) config.ui = ui
     if (events !== undefined) config.events = events
     if (debug !== undefined) config.debug = debug
+    if (strings !== undefined) config.strings = strings
     return config
   }
 

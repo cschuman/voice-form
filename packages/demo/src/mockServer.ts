@@ -96,7 +96,7 @@ async function mockVoiceParse(init?: RequestInit): Promise<Response> {
 
     const response: ParseResponse = {
       fields,
-      rawResponse: `Mock LLM parsed the transcript: "${request.transcript}"`,
+      rawResponse: `Mock LLM parsed transcript (${request.transcript.length} chars)`,
     }
 
     return new Response(JSON.stringify(response), {

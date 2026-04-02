@@ -78,7 +78,7 @@
     try {
       isLoading = true
 
-      voiceInstance = await createVoiceForm({
+      voiceInstance = createVoiceForm({
         endpoint: '/api/voice-parse',
         schema: {
           formName: 'Contact Form',
