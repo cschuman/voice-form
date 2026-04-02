@@ -170,6 +170,10 @@ export function createWebSpeechAdapter(): STTAdapter {
         return
       }
 
+      // Mark as handled so onend doesn't emit a stale onFinal('') after the
+      // error has already transitioned the state machine.
+      finalCalled = true
+
       const err = new SpeechAdapterError(
         code,
         `SpeechRecognition error: ${event.error}`,
