@@ -82,6 +82,21 @@ importers:
         specifier: ^6.0.0
         version: 6.4.1
 
+  packages/dev:
+    devDependencies:
+      '@voiceform/core':
+        specifier: workspace:*
+        version: link:../core
+      tsup:
+        specifier: ^8.0.0
+        version: 8.5.1(postcss@8.5.8)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(jsdom@29.0.1)
+
   packages/react:
     devDependencies:
       '@testing-library/jest-dom':

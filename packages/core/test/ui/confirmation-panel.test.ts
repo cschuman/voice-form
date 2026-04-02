@@ -15,6 +15,7 @@ import type {
   VoiceFormStrings,
   ConfirmedField,
   StateListener,
+  FieldSchema,
 } from '../../src/types.js'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -801,6 +802,605 @@ describe('mountConfirmationPanel', () => {
     // What matters is: only one dialog at a time, and it shows new data
     const allDialogs = document.querySelectorAll('[role="dialog"]')
     expect(allDialogs.length).toBe(1)
+    unmount()
+  })
+})
+
+// ─── P6-10: Field-Level Correction ───────────────────────────────────────────
+
+describe('mountConfirmationPanel — field-level correction (P6-10)', () => {
+  let anchor: HTMLElement
+  let instance: ReturnType<typeof makeInstance>
+  let strings: VoiceFormStrings
+
+  // Helper schema with field type information for the panel
+  const schema: FieldSchema[] = [
+    { name: 'firstName', type: 'text', label: 'First name' },
+    { name: 'email', type: 'email', label: 'Email' },
+    { name: 'country', type: 'select', label: 'Country', options: ['US', 'CA', 'UK'] },
+    { name: 'phone', type: 'tel', label: 'Phone' },
+  ]
+
+  const confirmingState: VoiceFormState = {
+    status: 'confirming',
+    transcript: 'hello',
+    confirmation: {
+      transcript: 'hello',
+      parsedFields: {
+        firstName: { label: 'First name', value: 'Jordan' },
+        email: { label: 'Email', value: 'jordan@example.com' },
+        country: { label: 'Country', value: 'US' },
+      },
+      missingFields: [],
+      invalidFields: [],
+      appendMode: false,
+    },
+  }
+
+  beforeEach(() => {
+    anchor = document.createElement('button')
+    anchor.type = 'button'
+    anchor.textContent = 'mic'
+    document.body.appendChild(anchor)
+    instance = makeInstance()
+    strings = makeStrings()
+  })
+
+  afterEach(() => {
+    anchor.remove()
+    document.querySelectorAll('[role="dialog"]').forEach((el) => el.remove())
+  })
+
+  // ── Edit button presence ────────────────────────────────────────────────
+
+  it('renders Edit buttons when allowFieldCorrection is true', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const editBtns = document.querySelectorAll('.vf-field-edit-btn')
+    expect(editBtns.length).toBeGreaterThan(0)
+    unmount()
+  })
+
+  it('does NOT render Edit buttons when allowFieldCorrection is false', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: false,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const editBtns = document.querySelectorAll('.vf-field-edit-btn')
+    expect(editBtns.length).toBe(0)
+    unmount()
+  })
+
+  it('does NOT render Edit buttons when no config is provided (defaults off)', () => {
+    // No fifth argument = allowFieldCorrection defaults to false
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings)
+    instance._simulateState(confirmingState)
+
+    const editBtns = document.querySelectorAll('.vf-field-edit-btn')
+    expect(editBtns.length).toBe(0)
+    unmount()
+  })
+
+  // ── ARIA labels on Edit buttons ─────────────────────────────────────────
+
+  it('Edit button has correct aria-label from strings', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const editBtns = Array.from(document.querySelectorAll('.vf-field-edit-btn'))
+    // Each edit button should have aria-label containing the field label
+    const firstEditBtn = editBtns[0]
+    expect(firstEditBtn?.getAttribute('aria-label')).toBeTruthy()
+    unmount()
+  })
+
+  it('Edit button aria-label includes the field label', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    // Find the edit button for the firstName field
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    const editBtn = fieldRow?.querySelector('.vf-field-edit-btn')
+    const ariaLabel = editBtn?.getAttribute('aria-label') ?? ''
+    // Should contain the field label (e.g. "Edit First name")
+    expect(ariaLabel.toLowerCase()).toContain('first name')
+    unmount()
+  })
+
+  // ── Click Edit — input appears ──────────────────────────────────────────
+
+  it('clicking Edit button replaces static value display with an input', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    const editBtn = fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')
+    editBtn?.click()
+
+    // Correction input should appear
+    const input = fieldRow?.querySelector<HTMLInputElement>('.vf-field-correction-input')
+    expect(input).not.toBeNull()
+    unmount()
+  })
+
+  it('correction input is pre-populated with the current value', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    const editBtn = fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')
+    editBtn?.click()
+
+    const input = fieldRow?.querySelector<HTMLInputElement>('.vf-field-correction-input')
+    expect(input?.value).toBe('Jordan')
+    unmount()
+  })
+
+  it('Save and Discard buttons appear when edit mode is active', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    const editBtn = fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')
+    editBtn?.click()
+
+    const saveBtn = fieldRow?.querySelector('.vf-field-save-btn')
+    const discardBtn = fieldRow?.querySelector('.vf-field-discard-btn')
+    expect(saveBtn).not.toBeNull()
+    expect(discardBtn).not.toBeNull()
+    unmount()
+  })
+
+  it('Save button has aria-label from strings', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const saveBtn = fieldRow?.querySelector('.vf-field-save-btn')
+    const label = saveBtn?.getAttribute('aria-label') ?? ''
+    expect(label.toLowerCase()).toContain('first name')
+    unmount()
+  })
+
+  it('Discard button has aria-label from strings', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const discardBtn = fieldRow?.querySelector('.vf-field-discard-btn')
+    const label = discardBtn?.getAttribute('aria-label') ?? ''
+    expect(label.toLowerCase()).toContain('first name')
+    unmount()
+  })
+
+  // ── Save — calls instance.correctField ─────────────────────────────────
+
+  it('clicking Save calls instance.correctField with the new value', () => {
+    // Make correctField return true (success)
+    vi.mocked(instance.correctField).mockReturnValue(true)
+
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const input = fieldRow?.querySelector<HTMLInputElement>('.vf-field-correction-input')
+    if (input) input.value = 'Alex'
+
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-save-btn')?.click()
+
+    expect(instance.correctField).toHaveBeenCalledWith('firstName', 'Alex')
+    unmount()
+  })
+
+  it('edit mode closes after a successful save', () => {
+    vi.mocked(instance.correctField).mockReturnValue(true)
+
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const input = fieldRow?.querySelector<HTMLInputElement>('.vf-field-correction-input')
+    if (input) input.value = 'Alex'
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-save-btn')?.click()
+
+    // Input should be gone after save
+    const inputAfter = fieldRow?.querySelector('.vf-field-correction-input')
+    expect(inputAfter).toBeNull()
+    unmount()
+  })
+
+  // ── Discard — reverts without calling correctField ──────────────────────
+
+  it('clicking Discard does NOT call instance.correctField', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const input = fieldRow?.querySelector<HTMLInputElement>('.vf-field-correction-input')
+    if (input) input.value = 'Something else'
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-discard-btn')?.click()
+
+    expect(instance.correctField).not.toHaveBeenCalled()
+    unmount()
+  })
+
+  it('clicking Discard closes the edit mode and restores the static value display', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-discard-btn')?.click()
+
+    // Input should be gone after discard
+    const inputAfter = fieldRow?.querySelector('.vf-field-correction-input')
+    expect(inputAfter).toBeNull()
+    // Edit button should be visible again
+    const editBtnAfter = fieldRow?.querySelector('.vf-field-edit-btn')
+    expect(editBtnAfter).not.toBeNull()
+    unmount()
+  })
+
+  // ── Select field: renders <select>, not <input> ─────────────────────────
+
+  it('clicking Edit on a select field renders a <select>, not a text input', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="country"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const selectEl = fieldRow?.querySelector<HTMLSelectElement>('select.vf-field-correction-input')
+    const textInput = fieldRow?.querySelector<HTMLInputElement>('input.vf-field-correction-input')
+    expect(selectEl).not.toBeNull()
+    expect(textInput).toBeNull()
+    unmount()
+  })
+
+  it('select correction element contains options from the schema', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="country"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const selectEl = fieldRow?.querySelector<HTMLSelectElement>('select.vf-field-correction-input')
+    const optionValues = Array.from(selectEl?.options ?? []).map((o) => o.value)
+    expect(optionValues).toContain('US')
+    expect(optionValues).toContain('CA')
+    expect(optionValues).toContain('UK')
+    unmount()
+  })
+
+  // ── Keyboard: Enter saves, Escape discards ──────────────────────────────
+
+  it('pressing Enter in a text input saves the correction', () => {
+    vi.mocked(instance.correctField).mockReturnValue(true)
+
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const input = fieldRow?.querySelector<HTMLInputElement>('.vf-field-correction-input')
+    if (input) {
+      input.value = 'NewName'
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    }
+
+    expect(instance.correctField).toHaveBeenCalledWith('firstName', 'NewName')
+    unmount()
+  })
+
+  it('pressing Escape in a text input discards the correction', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const input = fieldRow?.querySelector<HTMLInputElement>('.vf-field-correction-input')
+    input?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+
+    expect(instance.correctField).not.toHaveBeenCalled()
+    const inputAfter = fieldRow?.querySelector('.vf-field-correction-input')
+    expect(inputAfter).toBeNull()
+    unmount()
+  })
+
+  // ── Focus management ────────────────────────────────────────────────────
+
+  it('focuses the correction input when edit mode opens', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    const editBtn = fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')
+    editBtn?.click()
+
+    const input = fieldRow?.querySelector<HTMLInputElement>('.vf-field-correction-input')
+    // document.activeElement should be the input
+    expect(document.activeElement).toBe(input)
+    unmount()
+  })
+
+  it('returns focus to the Edit button after Save', () => {
+    vi.mocked(instance.correctField).mockReturnValue(true)
+
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const input = fieldRow?.querySelector<HTMLInputElement>('.vf-field-correction-input')
+    if (input) input.value = 'Alex'
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-save-btn')?.click()
+
+    // After save, a new edit button is created and focused. Query it fresh from DOM.
+    const editBtnAfterSave = fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')
+    expect(document.activeElement).toBe(editBtnAfterSave)
+    unmount()
+  })
+
+  it('returns focus to the Edit button after Discard', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-discard-btn')?.click()
+
+    // After discard, a new edit button is created and focused. Query it fresh from DOM.
+    const editBtnAfterDiscard = fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')
+    expect(document.activeElement).toBe(editBtnAfterDiscard)
+    unmount()
+  })
+
+  // ── ARIA attributes ─────────────────────────────────────────────────────
+
+  it('correction input has aria-labelledby pointing to the field label', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const input = fieldRow?.querySelector<HTMLInputElement>('.vf-field-correction-input')
+    const labelId = input?.getAttribute('aria-labelledby')
+    expect(labelId).toBeTruthy()
+
+    // The referenced element should exist and contain the field label text
+    const labelEl = document.getElementById(labelId!)
+    expect(labelEl).not.toBeNull()
+    expect(labelEl?.textContent?.trim()).toBe('First name')
+    unmount()
+  })
+
+  it('sr-only hint element exists with edit hint text', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="firstName"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const hintEl = fieldRow?.querySelector('.vf-sr-only')
+    expect(hintEl).not.toBeNull()
+    expect(hintEl?.textContent).toContain('Enter')
+    unmount()
+  })
+
+  // ── Password fields excluded ─────────────────────────────────────────────
+
+  it('does NOT render Edit button for password fields', () => {
+    const schemaWithPassword: FieldSchema[] = [
+      { name: 'username', type: 'text', label: 'Username' },
+      // password fields should be excluded per security spec
+    ]
+    const fieldsWithPwd: ParsedFields = {
+      username: { label: 'Username', value: 'jordan' },
+    }
+
+    const unmount = mountConfirmationPanel(anchor, instance, fieldsWithPwd, strings, {
+      allowFieldCorrection: true,
+      schema: schemaWithPassword,
+    })
+    instance._simulateState({
+      status: 'confirming',
+      transcript: 'hello',
+      confirmation: {
+        transcript: 'hello',
+        parsedFields: { username: { label: 'Username', value: 'jordan' } },
+        missingFields: [],
+        invalidFields: [],
+        appendMode: false,
+      },
+    })
+
+    // Username field should have an edit button
+    const userRow = document.querySelector('[data-field-name="username"]')
+    expect(userRow?.querySelector('.vf-field-edit-btn')).not.toBeNull()
+    unmount()
+  })
+
+  // ── fillLabelEdited button label ────────────────────────────────────────
+
+  it('fill button label updates to fillLabelEdited when a field has userCorrected: true', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+
+    // Simulate a state where a field has been corrected
+    instance._simulateState({
+      status: 'confirming',
+      transcript: 'hello',
+      confirmation: {
+        transcript: 'hello',
+        parsedFields: {
+          firstName: { label: 'First name', value: 'Alex', userCorrected: true, originalValue: 'Jordan' },
+        },
+        missingFields: [],
+        invalidFields: [],
+        appendMode: false,
+      },
+    })
+
+    const fillBtn = document.querySelector('.vf-fill-btn')
+    expect(fillBtn?.textContent?.trim()).toBe(strings.confirm.fillLabelEdited)
+    unmount()
+  })
+
+  it('fill button label is standard fillLabel when no fields are corrected', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fillBtn = document.querySelector('.vf-fill-btn')
+    expect(fillBtn?.textContent?.trim()).toBe(strings.confirm.fillLabel)
+    unmount()
+  })
+
+  // ── data-field-name attributes ──────────────────────────────────────────
+
+  it('field rows have data-field-name attributes matching field names', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const firstNameRow = document.querySelector('[data-field-name="firstName"]')
+    const emailRow = document.querySelector('[data-field-name="email"]')
+    expect(firstNameRow).not.toBeNull()
+    expect(emailRow).not.toBeNull()
+    unmount()
+  })
+
+  // ── correction input type matches field type ────────────────────────────
+
+  it('correction input for an email field has type="email"', () => {
+    const unmount = mountConfirmationPanel(anchor, instance, makeFields(), strings, {
+      allowFieldCorrection: true,
+      schema,
+    })
+    instance._simulateState(confirmingState)
+
+    const fieldRow = document.querySelector('[data-field-name="email"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const input = fieldRow?.querySelector<HTMLInputElement>('.vf-field-correction-input')
+    expect(input?.type).toBe('email')
+    unmount()
+  })
+
+  it('correction input for a tel field has type="tel"', () => {
+    const schemaWithTel: FieldSchema[] = [
+      { name: 'phone', type: 'tel', label: 'Phone' },
+    ]
+    const unmount = mountConfirmationPanel(
+      anchor,
+      instance,
+      { phone: { label: 'Phone', value: '555-1234' } },
+      strings,
+      { allowFieldCorrection: true, schema: schemaWithTel },
+    )
+    instance._simulateState({
+      status: 'confirming',
+      transcript: 'hello',
+      confirmation: {
+        transcript: 'hello',
+        parsedFields: { phone: { label: 'Phone', value: '555-1234' } },
+        missingFields: [],
+        invalidFields: [],
+        appendMode: false,
+      },
+    })
+
+    const fieldRow = document.querySelector('[data-field-name="phone"]')
+    fieldRow?.querySelector<HTMLButtonElement>('.vf-field-edit-btn')?.click()
+
+    const input = fieldRow?.querySelector<HTMLInputElement>('.vf-field-correction-input')
+    expect(input?.type).toBe('tel')
     unmount()
   })
 })

@@ -29,7 +29,7 @@
  */
 
 import { sanitizeFieldValue } from './utils/sanitize.js'
-import type { FieldType, InjectionResult, FieldInjectionOutcome, ParsedFieldValue } from './types.js'
+import type { FieldType, InjectionResult, FieldInjectionOutcome, ConfirmedField } from './types.js'
 
 // ─── Module-scope native setter cache ────────────────────────────────────────
 //
@@ -103,7 +103,7 @@ export interface InjectorConfig {
  */
 export interface Injector {
   /**
-   * Inject the supplied parsed field values.
+   * Inject the supplied confirmed field values.
    *
    * In callback mode the `onFill` callback is invoked for each field in
    * insertion order, awaited in series.
@@ -111,10 +111,14 @@ export interface Injector {
    * In DOM injection mode element lookup, value write, and event dispatch all
    * happen inside a single `requestAnimationFrame` callback (two-pass batch).
    *
+   * The parameter type accepts `ConfirmedField` (which is a superset of
+   * `ParsedFieldValue`) so the injector can access `existingValue` for
+   * appendMode concatenation without re-reading the DOM at injection time.
+   *
    * @returns A Promise that resolves to an {@link InjectionResult} describing
    *   the per-field outcome.
    */
-  inject(fields: Record<string, ParsedFieldValue>): Promise<InjectionResult>
+  inject(fields: Record<string, ConfirmedField>): Promise<InjectionResult>
 
   /**
    * Clears the internal element lookup cache.
@@ -167,7 +171,7 @@ export function createInjector(config: InjectorConfig): Injector {
   const root: HTMLElement | Document = config.formElement ?? document
 
   return {
-    inject: (fields) => runDomMode(fields, root, elementCache),
+    inject: (fields) => runDomMode(fields, root, elementCache, config),
     clearCache: () => elementCache.clear(),
   }
 }
@@ -175,7 +179,7 @@ export function createInjector(config: InjectorConfig): Injector {
 // ─── Callback mode implementation ────────────────────────────────────────────
 
 async function runCallbackMode(
-  fields: Record<string, ParsedFieldValue>,
+  fields: Record<string, ConfirmedField>,
   onFill: NonNullable<InjectorConfig['onFill']>,
 ): Promise<InjectionResult> {
   const outcomes: Record<string, FieldInjectionOutcome> = {}
@@ -210,9 +214,10 @@ async function runCallbackMode(
  * layout thrash caused by alternating write/read cycles. (PERF 2.4)
  */
 function runDomMode(
-  fields: Record<string, ParsedFieldValue>,
+  fields: Record<string, ConfirmedField>,
   root: HTMLElement | Document,
   elementCache: Map<string, HTMLElement | null>,
+  config: InjectorConfig,
 ): Promise<InjectionResult> {
   return new Promise<InjectionResult>((resolve) => {
     requestAnimationFrame(() => {
@@ -234,6 +239,15 @@ function runDomMode(
         const el = resolveElement(fieldName, root, elementCache)
 
         if (el === null) {
+          if (config.multiStep) {
+            console.warn(
+              `[voice-form] Field "${fieldName}" not found in DOM — expected in multiStep mode.`,
+            )
+          } else {
+            console.error(
+              `[voice-form] Field "${fieldName}" not found in DOM.`,
+            )
+          }
           work.push({
             name: fieldName,
             plan: { kind: 'skip', reason: { status: 'skipped', reason: 'element-not-found' } },
@@ -313,7 +327,25 @@ function runDomMode(
             plan: { kind: 'radio', allRadios, targetValue: sanitizedValue },
           })
         } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-          work.push({ name: fieldName, plan: { kind: 'text', el, value: sanitizedValue } })
+          // appendMode: concatenate existingValue (captured at buildConfirmationData time)
+          // with the new sanitized value, separated by a single space.
+          // ONLY applies to text, email, tel, and textarea fields.
+          // Number, date, and other typed inputs replace their value unconditionally.
+          // existingValue must be a non-empty, non-whitespace-only string — otherwise
+          // just use the new value directly. (LLD § 3.3 / FR-108)
+          // Only text and textarea fields support append mode.
+          // Email, tel, number, date, and other typed inputs always replace.
+          const isAppendableType = fieldType === 'text' || fieldType === 'textarea'
+          let finalValue = sanitizedValue
+          if (
+            config.appendMode &&
+            isAppendableType &&
+            typeof parsed.existingValue === 'string' &&
+            parsed.existingValue.trim() !== ''
+          ) {
+            finalValue = parsed.existingValue + ' ' + sanitizedValue
+          }
+          work.push({ name: fieldName, plan: { kind: 'text', el, value: finalValue } })
         } else {
           // Unknown element type — skip.
           outcomes[fieldName] = { status: 'failed', error: 'Unsupported element type' }
@@ -380,7 +412,7 @@ function runDomMode(
         }
       }
 
-      resolve(buildResult(outcomes))
+      resolve(buildResult(outcomes, config.multiStep ?? false))
     })
   })
 }
@@ -470,9 +502,28 @@ function detectFieldType(el: HTMLElement): FieldType {
 
 /**
  * Derives an {@link InjectionResult} from the per-field outcome map.
- * `success` is `true` only when every field has `status: 'injected'`.
+ *
+ * When `multiStep` is true, fields that were skipped because their element was
+ * not found are excluded from the success calculation — they are expected to be
+ * injected in a later step. `success` is `true` if every *found* field was
+ * injected (or there were no found fields at all).
+ *
+ * When `multiStep` is false (default), `success` is `true` only when every
+ * field has `status: 'injected'`.
  */
-function buildResult(outcomes: Record<string, FieldInjectionOutcome>): InjectionResult {
+function buildResult(
+  outcomes: Record<string, FieldInjectionOutcome>,
+  multiStep = false,
+): InjectionResult {
+  if (multiStep) {
+    const nonSkippedNotFound = Object.values(outcomes).filter(
+      (o) => !(o.status === 'skipped' && o.reason === 'element-not-found'),
+    )
+    const success =
+      nonSkippedNotFound.length === 0 ||
+      nonSkippedNotFound.every((o) => o.status === 'injected')
+    return { success, fields: outcomes }
+  }
   const success = Object.values(outcomes).every((o) => o.status === 'injected')
   return { success, fields: outcomes }
 }

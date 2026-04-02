@@ -120,6 +120,79 @@ pnpm add @voiceform/svelte
 
 See the [API Reference](./docs/API.md) for the full component API, snippets, and store integration.
 
+## React Integration
+
+First-class [React 18+](https://react.dev) support:
+
+```bash
+pnpm add @voiceform/react
+# peer deps: react >=18, react-dom >=18, @voiceform/core >=2.0.0
+```
+
+**Hook API:**
+
+```tsx
+import { useVoiceForm } from '@voiceform/react'
+
+function ContactForm() {
+  const { state, instance } = useVoiceForm({
+    endpoint: '/api/voice-parse',
+    schema: {
+      formName: 'Contact Form',
+      fields: [
+        { name: 'fullName', label: 'Full Name', type: 'text', required: true },
+        { name: 'email', label: 'Email', type: 'email', required: true },
+      ],
+    },
+  })
+
+  return (
+    <button
+      onClick={() => instance.start()}
+      disabled={state.status !== 'idle'}
+    >
+      {state.status === 'recording' ? 'Listening…' : 'Speak to fill form'}
+    </button>
+  )
+}
+```
+
+**Component API (with default UI):**
+
+```tsx
+import { VoiceForm } from '@voiceform/react'
+
+<VoiceForm
+  endpoint="/api/voice-parse"
+  schema={mySchema}
+  onDone={(result) => console.log('Filled:', result)}
+/>
+```
+
+**With React Hook Form** (`onFieldsResolved` bypasses DOM injection):
+
+```tsx
+<VoiceForm
+  endpoint="/api/voice-parse"
+  schema={mySchema}
+  onFieldsResolved={(fields) => {
+    Object.entries(fields).forEach(([name, value]) => setValue(name, value))
+  }}
+/>
+```
+
+See the [API Reference](./docs/API.md#react-integration-voiceformreact) for the full hook and component API.
+
+## What's New in V2
+
+- **React integration** — `@voiceform/react` with `useVoiceForm` hook and `VoiceForm` component
+- **Whisper STT adapter** — `MediaRecorder`-based adapter via `@voiceform/core/adapters/whisper`
+- **Append mode** — Speak to append to existing field values (`appendMode: true`)
+- **Multi-step forms** — Inject across wizard steps without errors on missing DOM fields (`multiStep: true`)
+- **Field corrections** — Users can edit parsed values in the confirmation panel (`correctField()`)
+- **Auto-detect schema** — Scan a form element to infer schema from DOM (`autoDetectSchema: true`)
+- **Developer tooling** — `@voiceform/dev` with schema inspector, logging middleware, and state visualizer
+
 ## Security Highlights
 
 - **No API keys in the browser.** Ever. BYOE is not an option — it's the only path.

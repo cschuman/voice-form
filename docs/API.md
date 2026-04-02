@@ -17,6 +17,10 @@ Complete documentation of the voice-form public API. All types and functions exp
 11. [UI Customization](#ui-customization)
 12. [Strings (i18n)](#strings-i18n)
 13. [Server Utilities](#server-utilities)
+14. [React Integration (@voiceform/react)](#react-integration-voiceformreact)
+15. [Developer Tooling (@voiceform/dev)](#developer-tooling-voiceformdev)
+16. [Schema Auto-Detection (detect-schema)](#schema-auto-detection-detect-schema)
+17. [V2 Configuration Options](#v2-configuration-options)
 
 ---
 
@@ -239,9 +243,9 @@ confirmButton.addEventListener('click', async () => {
 })
 ```
 
-#### `updateSchema(schema): void`
+#### `setSchema(schema): void`
 
-Programmatically update the form schema. Valid only from `idle` state. Useful for dynamic forms that change fields at runtime.
+Replace the active schema. Valid only from `idle` state. Useful for multi-step forms or dynamic field sets. Clears the injector's element cache.
 
 **Parameters:**
 
@@ -250,18 +254,71 @@ Programmatically update the form schema. Valid only from `idle` state. Useful fo
 **Throws:**
 
 - `VoiceFormError` (code: `INVALID_TRANSITION`) — Not in idle state
-- `VoiceFormError` (code: `SCHEMA_INVALID`) — New schema fails validation
+- `VoiceFormConfigError` (code: `SCHEMA_INVALID`) — New schema fails validation
 
 **Example:**
 
 ```ts
-// User selects "Business" mode; add business-specific fields
-instance.updateSchema({
+// Multi-step: after step 1 completes, switch to step 2 fields
+instance.setSchema({
+  formName: 'Shipping Address',
   fields: [
-    { name: 'companyName', label: 'Company Name', type: 'text', required: true },
-    ...originalFields,
+    { name: 'street', label: 'Street', type: 'text', required: true },
+    { name: 'city', label: 'City', type: 'text', required: true },
+    { name: 'zipCode', label: 'ZIP Code', type: 'text' },
   ],
 })
+```
+
+#### `getSchema(): FormSchema`
+
+Returns the schema currently active on the instance.
+
+**Returns:** The `FormSchema` last set via `createVoiceForm` or `setSchema`.
+
+**Example:**
+
+```ts
+const currentSchema = instance.getSchema()
+console.log('Active fields:', currentSchema.fields.map((f) => f.name))
+```
+
+#### `correctField(fieldName, value): boolean`
+
+Correct the value of a single field while in `confirming` state. Updates `ConfirmationData` immutably via a `FIELD_CORRECTED` event. The corrected value is passed through `sanitizeFieldValue` before applying. Valid only from `confirming` state.
+
+**Parameters:**
+
+- `fieldName` — `FieldSchema.name` of the field to correct
+- `value` — The corrected string value from the user
+
+**Returns:** `true` if the correction was applied; `false` if called outside `confirming` state, if the instance is destroyed, or if sanitization rejects the value (non-empty input sanitized to empty string).
+
+**Example:**
+
+```ts
+// User typed a correction in the confirmation panel
+const applied = instance.correctField('email', 'john@example.com')
+if (!applied) {
+  console.warn('Correction could not be applied')
+}
+```
+
+#### `updateSchema(schema): void` (deprecated)
+
+**Deprecated since v2.** Use `setSchema()` instead. Will be removed in v3.
+
+Calls `setSchema()` internally and emits a `console.warn` deprecation notice.
+
+**Parameters:**
+
+- `schema` — `FormSchema` object with new field definitions
+
+**Example:**
+
+```ts
+// Deprecated — use setSchema() instead
+instance.updateSchema({ fields: [...] })
 ```
 
 #### `destroy(): void`
@@ -460,6 +517,7 @@ Internal events dispatched by the state machine. Exported for testing and headle
 | `INJECTION_COMPLETE` | `result: InjectionResult` | DOM injection complete. |
 | `ACKNOWLEDGE_ERROR` | — | User acknowledged error (in error UI). |
 | `AUTO_RESET` | — | Recoverable error auto-resets to idle. |
+| `FIELD_CORRECTED` | `confirmation: ConfirmationData` | **v2.** User saved a field correction in the confirmation panel. Carries an immutably updated `ConfirmationData`. Valid only in `confirming` state. |
 
 ### `VoiceFormEvents`
 
@@ -513,12 +571,15 @@ createVoiceForm({
 
 Data presented to the user in the confirmation step. The default UI renders this; headless mode receives it via `onBeforeConfirm` callback.
 
+**IMPORTANT (security):** Treat `ConfirmationData` as immutable once it enters `confirming` state. The `FIELD_CORRECTED` event produces a new object via spread — never mutate `parsedFields` in place.
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `transcript` | `string` | Raw transcript from STT. Shown so user can verify what was heard. |
 | `parsedFields` | `Record<string, ConfirmedField>` | Fields the LLM successfully parsed, keyed by field name. |
 | `missingFields` | `string[]` | Field names the LLM could not extract values for. If any are `required: true`, a warning is shown. |
 | `invalidFields` | `{ name: string; value: string; reason: string }[]` | Fields where the value failed a validation constraint. Still injectable; advisory only. |
+| `appendMode` | `boolean` | **v2.** True when `appendMode` was active for this session. Used by the confirmation panel to render append-preview rows. |
 
 ### `ConfirmedField`
 
@@ -529,6 +590,9 @@ A single confirmed field value ready for injection.
 | `label` | `string` | Field label from schema (or name if label was omitted). |
 | `value` | `string` | The value the LLM extracted. Sanitized. |
 | `confidence` | `number` | Optional confidence score from the LLM (0–1). |
+| `existingValue` | `string` | **v2.** When `appendMode` is true and the DOM field had a pre-existing value, holds that value. The injected value will be `existingValue + ' ' + value`. |
+| `userCorrected` | `boolean` | **v2.** True when the user manually edited this field's value in the confirmation panel. |
+| `originalValue` | `string` | **v2.** The LLM-parsed value before user correction. Only present when `userCorrected` is true. |
 
 **Example:**
 
@@ -541,6 +605,7 @@ const data: ConfirmationData = {
   },
   missingFields: [],
   invalidFields: [],
+  appendMode: false,
 }
 ```
 
@@ -665,6 +730,50 @@ createVoiceForm({
   // ...
 })
 ```
+
+### `WhisperAdapter` (v2)
+
+A `MediaRecorder`-based STT adapter that records audio, assembles a `Blob`, and POSTs to a developer-controlled transcription endpoint. Useful when Web Speech API is unavailable or you need server-side transcription.
+
+**Install:**
+
+```bash
+pnpm add @voiceform/core
+```
+
+**Import (separate subpath — tree-shakeable):**
+
+```ts
+import { WhisperAdapter } from '@voiceform/core/adapters/whisper'
+```
+
+**Configuration (`WhisperAdapterConfig`):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `transcriptionEndpoint` | `string` | Required | URL of your transcription proxy. The adapter POSTs raw audio and expects `{ transcript: string }`. |
+| `maxDurationMs` | `number` | `60000` | Maximum recording duration in milliseconds. Auto-stops after this limit. |
+| `headers` | `Record<string, string>` | `{}` | Additional HTTP headers for auth on your transcription endpoint. |
+| `timeoutMs` | `number` | `30000` | POST request timeout. Whisper inference is slower than streaming STT. |
+
+**Example:**
+
+```ts
+import { createVoiceForm } from '@voiceform/core'
+import { WhisperAdapter } from '@voiceform/core/adapters/whisper'
+
+const instance = createVoiceForm({
+  endpoint: '/api/voice-parse',
+  schema: mySchema,
+  sttAdapter: new WhisperAdapter({
+    transcriptionEndpoint: '/api/transcribe',
+    headers: { Authorization: `Bearer ${token}` },
+    maxDurationMs: 30000,
+  }),
+})
+```
+
+**Security:** The `X-VoiceForm-Request: 1` header is always included in transcription POSTs. Your endpoint should validate it. Never put LLM API keys in `headers` — they belong server-side.
 
 ---
 
@@ -1109,11 +1218,11 @@ export async function parseVoice(req) {
 
 ### `@voiceform/svelte`
 
-Svelte wrapper (not yet published; coming in v0.2).
+Svelte 5 wrapper. See [Svelte Integration](../README.md#svelte-integration) for usage.
 
 ### `@voiceform/react`
 
-React wrapper (not yet published; coming in v0.2).
+React 18+ wrapper. See [React Integration](#react-integration-voiceformreact) below.
 
 ---
 
@@ -1158,4 +1267,451 @@ Exported constant containing the current version string.
 ```ts
 import { VERSION } from '@voiceform/core'
 console.log(VERSION) // e.g., "0.1.0"
+```
+
+---
+
+## V2 Configuration Options
+
+The following options were added in v2. All are optional and backward-compatible.
+
+### `appendMode?: boolean` (v2)
+
+When `true`, new string values for `text` and `textarea` fields are appended to the existing DOM value with a single space separator. Has no effect on `number`, `date`, `boolean`, `select`, `checkbox`, or `radio` fields.
+
+Default: `false`.
+
+```ts
+createVoiceForm({
+  appendMode: true, // "Hello" + "world" → "Hello world"
+  // ...
+})
+```
+
+### `multiStep?: boolean` (v2)
+
+When `true`, fields not found in the current DOM during injection are treated as warnings (`console.warn`) rather than errors (`console.error`). `InjectionResult.success` remains `true` as long as all found fields were injected. Required for wizard/multi-step forms.
+
+Default: `false`.
+
+```ts
+createVoiceForm({
+  multiStep: true, // Step 1 of 3 — step 2 fields may not be in DOM yet
+  // ...
+})
+```
+
+### `autoDetectSchema?: boolean` (v2)
+
+When `true` and no explicit `schema` is provided, voice-form scans the `formElement` to infer a `FormSchema` from the DOM structure. Requires `formElement` to be set. Triggers a dynamic import of the `detect-schema` module (tree-shakeable).
+
+If both `schema` and `autoDetectSchema` are provided, the explicit `schema` wins and a `console.warn` is emitted.
+
+**Requires `createVoiceFormAsync` — not compatible with the synchronous `createVoiceForm`.**
+
+Default: `false`.
+
+### `onSchemaDetected?: (schema: FormSchema) => FormSchema | void` (v2)
+
+Callback invoked once after schema auto-detection completes. Receives the detected schema. Return a modified `FormSchema` to override the detected result, or `undefined`/`void` to accept it as-is. The returned schema is validated by `validateSchema()`.
+
+```ts
+const instance = await createVoiceFormAsync({
+  autoDetectSchema: true,
+  formElement: '#my-form',
+  onSchemaDetected: (detected) => {
+    // Add a description to a specific field
+    return {
+      ...detected,
+      fields: detected.fields.map((f) =>
+        f.name === 'notes'
+          ? { ...f, description: 'Additional context or special requests' }
+          : f,
+      ),
+    }
+  },
+  endpoint: '/api/voice-parse',
+})
+```
+
+### `allowFieldCorrection?: boolean` (v2)
+
+When `false`, the confirmation panel shows field values as static text — no edit controls are rendered. Default: `true`.
+
+---
+
+## React Integration (@voiceform/react)
+
+First-class React 18+ support via `@voiceform/react`.
+
+**Install:**
+
+```bash
+pnpm add @voiceform/react
+# peer deps: react >=18, react-dom >=18, @voiceform/core >=2.0.0
+```
+
+### `useVoiceForm(config): UseVoiceFormResult`
+
+React hook that creates and manages a `VoiceFormInstance`. Handles initialization, state synchronization via `useSyncExternalStore`, and cleanup on unmount.
+
+**Parameters:**
+
+- `config` — `VoiceFormConfig` (same as `createVoiceForm`)
+
+**Returns:** `{ state: VoiceFormState, instance: VoiceFormInstance }`
+
+**Stability guarantees:**
+- `instance` is a stable reference — does not change across re-renders
+- `subscribe` and `getSnapshot` use `useCallback` with empty deps — no re-subscription on re-render
+- React Strict Mode: `createVoiceForm` is called twice in development (expected); the second instance persists
+
+**Example:**
+
+```tsx
+import { useVoiceForm } from '@voiceform/react'
+
+function VoiceContactForm() {
+  const { state, instance } = useVoiceForm({
+    endpoint: '/api/voice-parse',
+    schema: contactSchema,
+    events: {
+      onDone: (result) => {
+        if (result.success) document.querySelector('form')?.submit()
+      },
+    },
+  })
+
+  return (
+    <div>
+      <button
+        onClick={() => instance.start()}
+        disabled={state.status !== 'idle'}
+      >
+        {state.status === 'recording' ? 'Listening…' : 'Speak to fill form'}
+      </button>
+      {state.status === 'confirming' && (
+        <ConfirmationPanel
+          data={state.confirmation}
+          onConfirm={() => instance.confirm()}
+          onCancel={() => instance.cancel()}
+        />
+      )}
+    </div>
+  )
+}
+```
+
+### `VoiceForm` component
+
+A compound component with default UI, render-prop API, and ref forwarding.
+
+**Props** (`VoiceFormProps extends VoiceFormConfig`):
+
+| Prop | Type | Description |
+|------|------|-------------|
+| `children` | `(props: { state, instance }) => ReactNode` | Render prop. When provided, the default mic button UI is not rendered. |
+| `onDone` | `(result: InjectionResult) => void` | Convenience prop. Chained with `events.onDone` — both fire. |
+| `onError` | `(error: VoiceFormError) => void` | Convenience prop. Chained with `events.onError` — both fire. |
+| `onFieldsResolved` | `(fields: Record<string, string>) => void` | When provided, DOM injection is bypassed. Receives sanitized field values. Use with React Hook Form, Formik, or React 19 form actions. |
+| `ref` | `React.Ref<HTMLButtonElement>` | Forwarded to the mic button in default UI mode. No-op in render-prop mode. |
+
+**Default UI (no children):**
+
+```tsx
+import { VoiceForm } from '@voiceform/react'
+
+<VoiceForm
+  endpoint="/api/voice-parse"
+  schema={mySchema}
+  onDone={(result) => console.log('Done:', result)}
+/>
+```
+
+**Render prop:**
+
+```tsx
+<VoiceForm endpoint="/api/voice-parse" schema={mySchema}>
+  {({ state, instance }) => (
+    <CustomUI state={state} onStart={() => instance.start()} />
+  )}
+</VoiceForm>
+```
+
+**With React Hook Form (`onFieldsResolved`):**
+
+```tsx
+import { useForm } from 'react-hook-form'
+import { VoiceForm } from '@voiceform/react'
+
+function ContactForm() {
+  const { setValue } = useForm()
+
+  return (
+    <VoiceForm
+      endpoint="/api/voice-parse"
+      schema={contactSchema}
+      onFieldsResolved={(fields) => {
+        // DOM injection is bypassed — set React Hook Form values directly
+        Object.entries(fields).forEach(([name, value]) => setValue(name, value))
+      }}
+    />
+  )
+}
+```
+
+### `createVoiceFormAsync(config): Promise<VoiceFormInstance>` (v2)
+
+Async factory required when `autoDetectSchema: true`. Use inside `useEffect` or the `useVoiceForm` hook.
+
+**WARNING (React users):** Never call `createVoiceFormAsync` synchronously during render. DOM access before the component tree mounts produces unreliable schema detection.
+
+```tsx
+import { createVoiceFormAsync } from '@voiceform/core'
+import { useEffect, useRef } from 'react'
+
+function AutoDetectForm() {
+  const instanceRef = useRef(null)
+  const formRef = useRef(null)
+
+  useEffect(() => {
+    createVoiceFormAsync({
+      autoDetectSchema: true,
+      formElement: formRef.current,
+      endpoint: '/api/voice-parse',
+    }).then((instance) => {
+      instanceRef.current = instance
+    })
+    return () => instanceRef.current?.destroy()
+  }, [])
+
+  return <form ref={formRef}>{/* your fields */}</form>
+}
+```
+
+---
+
+## Schema Auto-Detection (detect-schema)
+
+`detectSchema` is available as a separate tree-shakeable subpath:
+
+```ts
+import { detectSchema } from '@voiceform/core/detect-schema'
+```
+
+This module is NOT included in the main `@voiceform/core` bundle unless explicitly imported or used via `autoDetectSchema`.
+
+### `detectSchema(formElement): FormSchema`
+
+Scans a form element and returns a `FormSchema` inferred from the DOM structure.
+
+**Parameters:**
+
+- `formElement` — `HTMLElement` (typically a `<form>` element)
+
+**Returns:** A `FormSchema`. May have zero fields if nothing is detectable.
+
+**Detection algorithm:**
+1. Queries all `<input>`, `<textarea>`, and `<select>` elements
+2. Excludes: `type="hidden"`, `type="submit"`, `type="reset"`, `type="button"`, `type="image"`, `type="password"`, nameless elements
+3. Resolves labels via 6-step priority: `<label for>`, `aria-labelledby`, `aria-label`, closest `<label>`, `placeholder`, `name/id` fallback
+4. Deduplicates radio groups by `name`, collects options from radio values
+5. Truncates all labels to 100 characters
+
+**Security:** Reads only element attributes and label text. Never reads `element.value` (current user input).
+
+**Example:**
+
+```ts
+import { detectSchema } from '@voiceform/core/detect-schema'
+
+const formEl = document.getElementById('contact-form')
+const schema = detectSchema(formEl)
+console.log(schema.fields)
+// [
+//   { name: 'email', label: 'Email Address', type: 'email', required: true },
+//   { name: 'message', label: 'Message', type: 'textarea' },
+// ]
+```
+
+Use `validateSchemaAgainstDOM` from `@voiceform/dev` to cross-check the detected schema against the live DOM in development.
+
+---
+
+## Developer Tooling (@voiceform/dev)
+
+`@voiceform/dev` provides diagnostics and debugging utilities. All functions are **no-ops in production** (`process.env.NODE_ENV === 'production'`).
+
+**Install (devDependencies only):**
+
+```bash
+pnpm add -D @voiceform/dev
+```
+
+### `inspectSchema(schema): SchemaInspectionResult`
+
+Runs rich diagnostics on a `FormSchema` and returns findings.
+
+**Parameters:**
+
+- `schema` — `FormSchema` to inspect
+
+**Returns:** `SchemaInspectionResult`
+
+```ts
+interface SchemaInspectionResult {
+  valid: boolean             // false if any 'error' diagnostics found
+  fieldCount: number
+  diagnostics: SchemaDiagnostic[]
+}
+
+interface SchemaDiagnostic {
+  field: string              // field name, or '__schema__' for top-level issues
+  severity: 'error' | 'warning' | 'suggestion'
+  message: string
+}
+```
+
+**Diagnostic rules:**
+
+| Severity | Rule |
+|----------|------|
+| `error` | Field name contains whitespace or CSS special characters |
+| `error` | Duplicate field name |
+| `warning` | Field has no `label` (LLM gets `name` only) |
+| `warning` | `select` or `radio` field has fewer than 2 options |
+| `suggestion` | `description` longer than 200 characters |
+| `suggestion` | `formName` or `formDescription` absent |
+| `suggestion` | `required: true` on a `checkbox` field |
+
+**Example:**
+
+```ts
+import { inspectSchema } from '@voiceform/dev'
+
+const { valid, diagnostics } = inspectSchema(mySchema)
+if (!valid) {
+  diagnostics
+    .filter((d) => d.severity === 'error')
+    .forEach((d) => console.error(`[${d.field}] ${d.message}`))
+}
+```
+
+### `validateSchemaAgainstDOM(schema, formElement): DOMValidationResult`
+
+Cross-checks a schema against the live DOM. Uses the same 3-step element lookup as the core injector (`[name=]`, `#id`, `[data-voiceform=]`). Logs a `console.group` / `console.table` summary in development.
+
+**Parameters:**
+
+- `schema` — `FormSchema`
+- `formElement` — `HTMLElement` to search within
+
+**Returns:**
+
+```ts
+interface DOMValidationResult {
+  missingInDOM: string[]      // schema fields not found in DOM
+  unmatchedInDOM: string[]    // DOM elements with no schema entry
+  matched: string[]           // successfully matched field names
+}
+```
+
+**Example:**
+
+```ts
+import { validateSchemaAgainstDOM } from '@voiceform/dev'
+
+const formEl = document.getElementById('my-form')!
+const result = validateSchemaAgainstDOM(mySchema, formEl)
+if (result.missingInDOM.length > 0) {
+  console.warn('Schema fields missing from DOM:', result.missingInDOM)
+}
+```
+
+### `createLoggingMiddleware(options?): Pick<VoiceFormConfig, 'events'>`
+
+Returns a partial `VoiceFormConfig` that logs state transitions, request/response timing, and errors to the browser console. Developer callbacks are chained — never replaced.
+
+**IMPORTANT (security review #8):** Always pass your existing callbacks via the `callbacks` option. Spreading the result replaces the `events` key — the `callbacks` option ensures both the logger and your code run.
+
+**Parameters (`LoggingMiddlewareOptions`):**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `logFullSchema` | `boolean` | `false` | Log full schema in each request group. |
+| `logRawResponse` | `boolean` | `true` | Log the `rawResponse` field from `ParseResponse`. |
+| `callbacks` | `Pick<VoiceFormEvents, 'onStateChange' \| 'onError'>` | — | Your existing callbacks to chain with logging. |
+
+**Returns:** `Pick<VoiceFormConfig, 'events'>`, or `{}` in production.
+
+**Example:**
+
+```ts
+import { createVoiceForm } from '@voiceform/core'
+import { createLoggingMiddleware } from '@voiceform/dev'
+
+const appConfig = {
+  endpoint: '/api/voice-parse',
+  schema: mySchema,
+  events: {
+    onDone: (result) => form.submit(),
+  },
+}
+
+const instance = createVoiceForm({
+  ...appConfig,
+  ...createLoggingMiddleware({ callbacks: appConfig.events }),
+})
+```
+
+Console output when recording starts and results arrive:
+
+```
+▶ voiceform dev — Request #1  [14:32:05.123]
+    Transcript  "John Smith, john at example dot com"
+    ─── Response [+312ms] HTTP 200 ───
+    ┌──────────┬─────────────────────┬────────────┐
+    │ (index)  │ value               │ confidence │
+    ├──────────┼─────────────────────┼────────────┤
+    │ fullName │ 'John Smith'        │ 0.99       │
+    │ email    │ 'john@example.com'  │ 0.98       │
+    └──────────┴─────────────────────┴────────────┘
+```
+
+### `attachStateVisualizer(instance, options?): () => void`
+
+Attaches a fixed-position overlay to `document.body` showing the current state and last 5 transitions. Returns a detach function.
+
+**Security:** All dynamic content is written via `textContent`. `innerHTML` is never used for data from the application (transcripts, field values, error messages).
+
+**Parameters:**
+
+- `instance` — `VoiceFormInstance` to observe
+- `options` — `StateVisualizerOptions`:
+  - `position?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'` — Default: `'bottom-right'`
+  - `verbose?: boolean` — Render full state JSON in the overlay. Default: `false`
+
+**Returns:** A `detach` function. Call it to remove the overlay. The overlay also auto-detaches when `instance.destroy()` is called.
+
+**Example:**
+
+```ts
+import { attachStateVisualizer } from '@voiceform/dev'
+
+const detach = attachStateVisualizer(instance, {
+  position: 'top-right',
+  verbose: false,
+})
+
+// Clean up manually if needed
+window.addEventListener('beforeunload', detach)
+```
+
+### `detachStateVisualizer(instance?): void`
+
+Removes the state visualizer overlay by `getElementById`. Best-effort cleanup — does not unsubscribe from state if the detach closure is not available. Safe to call if no visualizer is attached (no-op).
+
+```ts
+import { detachStateVisualizer } from '@voiceform/dev'
+detachStateVisualizer()
 ```

@@ -232,6 +232,30 @@ function normalizeError(err: unknown): VoiceFormError {
   )
 }
 
+// ─── resolveElementForRead ────────────────────────────────────────────────────
+
+/**
+ * Resolves a field name to a DOM element for reading its current value.
+ * Uses the same three-step lookup as the injector (name → id → data-voiceform),
+ * but does not cache results — this is called only during the processing state,
+ * once per field per session. (FR-108 / LLD § 4.3)
+ */
+function resolveElementForRead(
+  fieldName: string,
+  root: HTMLElement | Document,
+): HTMLInputElement | HTMLTextAreaElement | null {
+  const escaped = CSS.escape(fieldName)
+  const el =
+    (root.querySelector(`[name="${escaped}"]`) as HTMLElement | null) ??
+    (root.querySelector(`#${escaped}`) as HTMLElement | null) ??
+    (root.querySelector(`[data-voiceform="${escaped}"]`) as HTMLElement | null)
+
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    return el
+  }
+  return null
+}
+
 // ─── buildConfirmationData ────────────────────────────────────────────────────
 
 /**
@@ -241,11 +265,21 @@ function normalizeError(err: unknown): VoiceFormError {
  * Fields in the schema that are absent from the response are placed in
  * missingFields. Fields whose sanitized values fail type constraints are placed
  * in invalidFields (but still included in parsedFields for display).
+ *
+ * When `options.appendMode` is true and a formElement is provided, reads the
+ * current DOM value of text/textarea fields and attaches it as `existingValue`
+ * on the ConfirmedField. The injector later uses this snapshot to build the
+ * final concatenated value without re-reading the DOM at injection time.
+ * (FR-108 / LLD § 4.3)
  */
 function buildConfirmationData(
   response: ParseResponse,
   transcript: string,
   schema: FormSchema,
+  options: {
+    appendMode: boolean
+    formElement?: HTMLElement | Document
+  } = { appendMode: false },
 ): ConfirmationData {
   const parsedFields: Record<string, ConfirmedField> = {}
   const missingFields: string[] = []
@@ -304,6 +338,27 @@ function buildConfirmationData(
       value: sanitizedValue,
       ...(raw.confidence !== undefined ? { confidence: raw.confidence } : {}),
     }
+
+    // FR-108: When appendMode is active, capture the current DOM value of
+    // text/textarea fields as existingValue. This snapshot is taken during the
+    // processing state — before the confirming state is entered — so the user
+    // sees the pre-fill value in the append preview. The injector reads it
+    // from ConfirmedField to compute the concatenated string.
+    // Only text and textarea fields support appending — email, tel, number,
+    // date, select, checkbox, and radio always replace. (LLD § 3.3 / FR-108)
+    if (
+      options.appendMode &&
+      options.formElement !== undefined &&
+      (fieldDef.type === 'text' || fieldDef.type === 'textarea')
+    ) {
+      const el = resolveElementForRead(fieldDef.name, options.formElement)
+      if (el !== null && typeof el.value === 'string' && el.value.trim() !== '') {
+        parsedFields[fieldDef.name] = {
+          ...parsedFields[fieldDef.name]!,
+          existingValue: el.value,
+        }
+      }
+    }
   }
 
   return {
@@ -311,7 +366,7 @@ function buildConfirmationData(
     parsedFields,
     missingFields,
     invalidFields,
-    appendMode: false,
+    appendMode: options.appendMode,
   }
 }
 
@@ -431,6 +486,8 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
 
   let injector: Injector = createInjector({
     ...(formElementResolved !== undefined ? { formElement: formElementResolved } : {}),
+    appendMode: config.appendMode ?? false,
+    multiStep: config.multiStep ?? false,
   })
 
   // ── 6. Create state machine ──────────────────────────────────────────────
@@ -439,7 +496,7 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
   // ── 7. Internal state tracking ───────────────────────────────────────────
   let destroyed = false
   let autoResetTimer: ReturnType<typeof setTimeout> | null = null
-  let lastRequestTimestamp = 0
+  let _lastRequestTimestamp = 0
   const cooldownMs = config.requestCooldownMs ?? 3000
 
   // Cooldown enforcement — timer-based flag that is armed when the done state
@@ -551,9 +608,12 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
           const response = await endpointClient.parse(request)
 
           // Track the timestamp of the last completed request for cooldown.
-          lastRequestTimestamp = Date.now()
+          _lastRequestTimestamp = Date.now()
 
-          const confirmation = buildConfirmationData(response, validation.transcript, currentSchema)
+          const confirmation = buildConfirmationData(response, validation.transcript, currentSchema, {
+            appendMode: config.appendMode ?? false,
+            ...(formElementResolved !== undefined ? { formElement: formElementResolved } : {}),
+          })
 
           // Fire onBeforeConfirm with exception detection (NEW-004).
           // Unlike safeInvokeCallback, invokeBeforeConfirm routes exceptions to
@@ -590,17 +650,12 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
         break
 
       case 'injecting': {
-        const parsedFieldsForInjection: Record<string, ParsedFieldValue> = {}
-        for (const [name, field] of Object.entries(state.confirmation.parsedFields)) {
-          parsedFieldsForInjection[name] = {
-            value: field.value,
-            ...(field.confidence !== undefined ? { confidence: field.confidence } : {}),
-          }
-        }
-
+        // Pass ConfirmedField objects directly so the injector can access
+        // existingValue for appendMode concatenation without re-reading the DOM.
+        // (LLD § 4.6)
         let injectionResult: InjectionResult
         try {
-          injectionResult = await injector.inject(parsedFieldsForInjection)
+          injectionResult = await injector.inject(state.confirmation.parsedFields)
         } catch {
           injectionResult = { success: false, fields: {} }
         }
@@ -768,25 +823,14 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
       machine.dispatch({ type: 'CONFIRM' })
     },
 
-    updateSchema(schema: FormSchema): void {
-      if (destroyed) return
-      const state = machine.getState()
-      if (state.status !== 'idle') {
-        throw new VoiceFormErrorImpl(
-          'INVALID_TRANSITION',
-          'updateSchema() can only be called from the idle state.',
-          false,
-        )
-      }
-
-      currentSchema = validateSchema(schema)
-      injector.clearCache()
-    },
-
     /**
-     * Replace the active schema. v2 rename of updateSchema().
-     * updateSchema() remains as a deprecated alias through v3.
-     * (P6-07 will add the deprecation warning on updateSchema().)
+     * Replace the active schema. Valid only from idle state.
+     * Validates the new schema synchronously; throws VoiceFormConfigError on failure.
+     * Clears the injector's element cache.
+     * This is the v2 canonical method. updateSchema() is a deprecated alias. (FR-110)
+     *
+     * @throws {VoiceFormError} INVALID_TRANSITION if not in idle state.
+     * @throws {VoiceFormConfigError} SCHEMA_INVALID if schema is invalid.
      */
     setSchema(schema: FormSchema): void {
       if (destroyed) return
@@ -805,22 +849,99 @@ export function createVoiceForm(config: VoiceFormConfig): VoiceFormInstance {
 
     /**
      * Returns the schema currently in use.
+     * Useful for multi-step forms where the developer inspects which schema
+     * is active at any point.
      */
     getSchema(): FormSchema {
       return currentSchema
     },
 
     /**
-     * Correct the value of a single field while in confirming state.
-     * Full implementation is in P6-08; this stub satisfies the interface.
-     * Returns false if not in confirming state or if instance is destroyed.
+     * @deprecated Use setSchema() instead. Will be removed in v3.
+     *
+     * Replace the active schema. This method now delegates to setSchema()
+     * and emits a deprecation warning on each call. (FR-110 / LLD § 4.5)
      */
-    correctField(_fieldName: string, _value: string): boolean {
+    updateSchema(schema: FormSchema): void {
+      console.warn(
+        '[voice-form] updateSchema() is deprecated and will be removed in v3. ' +
+        'Use setSchema() instead.',
+      )
+      this.setSchema(schema)
+    },
+
+    /**
+     * Correct the value of a single field while in confirming state.
+     *
+     * The value is passed through sanitizeFieldValue before being applied.
+     * If sanitization produces an empty string from a non-empty input, the
+     * call is a no-op and returns false. (FR-114 / LLD § 4.4)
+     *
+     * Produces a FIELD_CORRECTED event that replaces ConfirmationData immutably.
+     * NEVER mutates state.confirmation in place (security review #1).
+     *
+     * @param fieldName  The FieldSchema.name of the field to correct.
+     * @param value      The corrected string value from the user.
+     * @returns true if the correction was applied, false if rejected.
+     */
+    correctField(fieldName: string, value: string): boolean {
       if (destroyed) return false
       const state = machine.getState()
       if (state.status !== 'confirming') return false
-      // Full sanitization and FIELD_CORRECTED dispatch is implemented in P6-08.
-      return false
+
+      const fieldDef = currentSchema.fields.find((f) => f.name === fieldName)
+      const fieldType = fieldDef?.type ?? 'text'
+      const options = fieldDef?.options as string[] | undefined
+
+      // Sanitize the user's input through the same pipeline as LLM output.
+      let sanitizedValue: string
+      try {
+        const result = sanitizeFieldValue(value, fieldType, options)
+        sanitizedValue = typeof result.value === 'string' ? result.value : String(result.value)
+      } catch {
+        return false
+      }
+
+      // Reject if sanitization consumed the entire non-empty input (e.g. pure
+      // HTML tags stripping to empty). This prevents the user from clearing a
+      // field by typing only markup. (LLD § 4.4)
+      if (sanitizedValue.trim() === '' && value.trim() !== '') {
+        return false
+      }
+
+      const existingField = state.confirmation.parsedFields[fieldName]
+
+      // Build new ConfirmationData immutably (security review #1).
+      // Use conditional spreads — NEVER mutate state.confirmation in place.
+      // exactOptionalPropertyTypes requires omitting optional fields rather
+      // than setting them to undefined.
+      const correctedField: ConfirmedField = {
+        label: existingField?.label ?? fieldDef?.label ?? fieldName,
+        value: sanitizedValue,
+        ...(existingField?.confidence !== undefined
+          ? { confidence: existingField.confidence }
+          : {}),
+        ...(existingField?.existingValue !== undefined
+          ? { existingValue: existingField.existingValue }
+          : {}),
+        userCorrected: true,
+        ...(existingField?.value !== undefined
+          ? { originalValue: existingField.value }
+          : {}),
+      }
+
+      const newParsedFields: Record<string, ConfirmedField> = {
+        ...state.confirmation.parsedFields,
+        [fieldName]: correctedField,
+      }
+
+      const newConfirmation: ConfirmationData = {
+        ...state.confirmation,
+        parsedFields: newParsedFields,
+      }
+
+      machine.dispatch({ type: 'FIELD_CORRECTED', confirmation: newConfirmation })
+      return true
     },
 
     destroy(): void {
