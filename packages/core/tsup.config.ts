@@ -20,4 +20,16 @@ export default defineConfig([
     sourcemap: true,
     outDir: 'dist',
   },
+  {
+    // CDN / script-tag IIFE build — exposes window.VoiceForm
+    // Includes both the headless core and the default UI in a single file.
+    entry: { voiceform: 'src/index.ts' },
+    format: ['iife'],
+    globalName: 'VoiceForm',
+    dts: false,
+    sourcemap: true,
+    minify: true,
+    treeshake: true,
+    outDir: 'dist',
+  },
 ])

@@ -1,7 +1,29 @@
 {
   "name": "@voiceform/svelte",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Svelte 5 component wrapper for @voiceform/core voice-driven forms",
   "type": "module",
+  "license": "MIT",
+  "author": "Corey Schuman",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cschuman/voice-form.git",
+    "directory": "packages/svelte"
+  },
+  "homepage": "https://github.com/cschuman/voice-form#readme",
+  "bugs": {
+    "url": "https://github.com/cschuman/voice-form/issues"
+  },
+  "keywords": [
+    "voice",
+    "form",
+    "svelte",
+    "svelte5",
+    "speech-to-text",
+    "stt",
+    "voice-ui",
+    "component"
+  ],
   "svelte": "./src/VoiceForm.svelte",
   "exports": {
     ".": {
@@ -19,7 +41,8 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "src"
+    "src",
+    "README.md"
   ],
   "scripts": {
     "build": "tsup",

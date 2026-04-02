@@ -15,7 +15,7 @@ Thank you for contributing. This document covers setup, the changeset workflow, 
 
 ```bash
 # Clone the repo
-git clone https://github.com/your-org/voice-form.git
+git clone https://github.com/cschuman/voice-form.git
 cd voice-form
 
 # Install the correct Node version (if using nvm)
@@ -129,6 +129,21 @@ pnpm changeset:version
 # Publish all changed packages to npm
 pnpm changeset:publish
 ```
+
+#### NPM_TOKEN setup
+
+Publishing is handled by the `.github/workflows/publish.yml` workflow, triggered on
+tag pushes matching `v*.*.*`. The workflow requires a repository secret named
+`NPM_TOKEN` containing an npm access token with publish permissions for the
+`@voiceform` scope.
+
+To set it up:
+1. Generate a token at https://www.npmjs.com/settings/tokens (Granular Access Token, publish scope)
+2. Go to the repo **Settings > Secrets and variables > Actions**
+3. Add a repository secret named `NPM_TOKEN` with the token value
+
+You can also trigger the workflow manually via `workflow_dispatch` with a dry-run
+option to verify the pipeline without actually publishing.
 
 ---
 

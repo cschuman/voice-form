@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * P1-11 / P1-NEW-09 — Public API surface tests
  *

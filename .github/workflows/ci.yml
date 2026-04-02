@@ -59,3 +59,9 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Check bundle size
+        run: pnpm size
+
+      - name: Generate coverage report
+        run: pnpm test:coverage --coverage

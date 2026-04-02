@@ -1,7 +1,32 @@
 {
   "name": "@voiceform/server-utils",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Server-side utilities for voice-form BYOE (Bring Your Own Endpoint) handlers",
   "type": "module",
+  "license": "MIT",
+  "author": "Corey Schuman",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cschuman/voice-form.git",
+    "directory": "packages/server-utils"
+  },
+  "homepage": "https://github.com/cschuman/voice-form#readme",
+  "bugs": {
+    "url": "https://github.com/cschuman/voice-form/issues"
+  },
+  "keywords": [
+    "voice",
+    "form",
+    "server",
+    "llm",
+    "speech-to-text",
+    "prompt",
+    "byoe",
+    "endpoint"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -13,7 +38,8 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "tsup",

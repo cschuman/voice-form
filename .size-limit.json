@@ -1,0 +1,20 @@
+[
+  {
+    "name": "@voiceform/core (headless)",
+    "path": "packages/core/dist/index.js",
+    "limit": "8 KB",
+    "gzip": true
+  },
+  {
+    "name": "@voiceform/core/ui",
+    "path": "packages/core/dist/ui/index.js",
+    "limit": "5 KB",
+    "gzip": true
+  },
+  {
+    "name": "@voiceform/svelte",
+    "path": "packages/svelte/dist/index.js",
+    "limit": "4 KB",
+    "gzip": true
+  }
+]
