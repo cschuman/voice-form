@@ -32,6 +32,7 @@ export type {
   VoiceFormEvent,
   // Confirmation
   ConfirmationData,
+  ConfirmedField,
   // Injection
   InjectionResult,
   // Strings / i18n
